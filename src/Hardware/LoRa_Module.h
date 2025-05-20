@@ -26,6 +26,7 @@
 #include "../config.h"
 #include "../Data/Logging.h"
 #include "SPI_Manager.h"
+#include "board_config.h"
 
 /**
  * Class for managing RFM95W LoRa module
