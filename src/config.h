@@ -24,15 +24,6 @@
 // Firmware version
 #define FIRMWARE_VERSION "1.0.6"
 
-// Hardware configuration
-// RFM95W pin definitions
-#define LORA_CS 5       // NSS pin
-#define LORA_RST 14     // RESET pin
-#define LORA_DIO0 36    // DIO0 pin (interrupt)
-#define SPI_MISO_PIN 35 // MISO pin
-#define SPI_MOSI_PIN 37 // MOSI pin
-#define SPI_SCK_PIN 18  // SCK pin
-
 // LoRa registers
 #define REG_FIFO 0x00
 #define REG_OP_MODE 0x01

@@ -25,6 +25,7 @@
 #include <SPI.h>
 #include "../Data/Logging.h"
 #include "../config.h"
+#include "board_config.h"
 
 /**
  * Class for SPI communication management
