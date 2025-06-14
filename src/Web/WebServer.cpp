@@ -79,6 +79,9 @@ bool WebPortal::init()
     server.begin();
     logger.info("Web server started on port " + String(HTTP_PORT));
 
+    otaServer = new OTAServer(logger, server);
+    otaServer->init();
+
     // Create task on core 0 for DNS and other processing
     // xTaskCreatePinnedToCore(
     //     webServerTask,        // Task function
@@ -200,6 +203,9 @@ void WebPortal::handleClient()
 {
     // No need to do anything here since the task handles it
     // We keep this method for compatibility
+
+    // This will handle auto-reboot after OTA process
+    otaServer->process();
 }
 
 // Ensure proper cleanup in the destructor
