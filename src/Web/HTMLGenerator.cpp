@@ -229,6 +229,7 @@ void HTMLGenerator::addNavigation(String &html, const String &activePage)
     html += "<a href='/mqtt' class='" + String(activePage == "MQTT" ? "active" : "") + "'>MQTT</a>";
     html += "<a href='/logs' class='" + String(activePage == "Logs" ? "active" : "") + "'>Logs</a>";
     html += "<a href='/api' class='" + String(activePage == "API" ? "active" : "") + "'>API</a>";
+    html += "<a href='/update'>Update</a>";
     html += "<a href='/reboot' onclick=\"return confirm('Are you sure you want to reboot the device?');\">Reboot</a>";
     html += "<a href='javascript:void(0);' class='icon' onclick='toggleMenu()'>&#9776;</a>";
     html += "</nav>";
