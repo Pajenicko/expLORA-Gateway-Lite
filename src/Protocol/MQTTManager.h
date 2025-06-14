@@ -29,6 +29,7 @@
 #include "Data/SensorManager.h"
 #include "Data/Logging.h"
 #include "Storage/ConfigManager.h"
+#include "Hardware/Network_Manager.h"
 
 /**
  * Class for managing MQTT communication with Home Assistant
@@ -45,6 +46,7 @@ private:
     SensorManager &sensorManager;       // Reference to sensor manager
     ConfigManager &configManager;       // Reference to configuration
     Logger &logger;                     // Reference to logger
+    NetworkManager &networkManager;     // Reference to network manager
 
     String clientId;                    // MQTT Client ID
     unsigned long lastReconnectAttempt; // Time of last connection attempt
@@ -64,7 +66,7 @@ private:
 
 public:
     // Constructor
-    MQTTManager(SensorManager &sensors, ConfigManager &config, Logger &log);
+    MQTTManager(SensorManager &sensors, ConfigManager &config, Logger &log, NetworkManager &nm);
 
     // Initialization
     bool init();
