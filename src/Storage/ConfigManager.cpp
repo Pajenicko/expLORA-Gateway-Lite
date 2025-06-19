@@ -159,6 +159,9 @@ bool ConfigManager::loadFromFS()
     mqttPassword = doc["mqttPassword"] | MQTT_DEFAULT_PASS;
     mqttEnabled = doc["mqttEnabled"] | MQTT_DEFAULT_ENABLED;
     mqttTls = doc["mqttTls"] | MQTT_DEFAULT_TLS;
+    mqttPrefix = doc["mqttPrefix"] | MQTT_DEFAULT_PREFIX;
+    mqttHAPrefix = doc["mqttHAPrefix"] | HA_DISCOVERY_DEFAULT_PREFIX;
+    mqttHAEnabled = doc["mqttHAEnabled"] | HA_DISCOVERY_DEFAULT_ENABLED;
 
     logger.debug("Loaded config - SSID: " + wifiSSID +
                  ", Password length: " + String(wifiPassword.length()) +
@@ -198,6 +201,9 @@ bool ConfigManager::saveToFS()
     doc["mqttPassword"] = mqttPassword;
     doc["mqttEnabled"] = mqttEnabled;
     doc["mqttTls"] = mqttTls;
+    doc["mqttPrefix"] = mqttPrefix;
+    doc["mqttHAEnabled"] = mqttHAEnabled;
+    doc["mqttHAPrefix"] = mqttHAPrefix;
 
     // Serialize to file
     if (serializeJson(doc, file) == 0)
@@ -253,6 +259,9 @@ bool ConfigManager::loadFromPreferences()
     }
     mqttEnabled = preferences.getBool("mqttEnabled", MQTT_DEFAULT_ENABLED);
     mqttTls = preferences.getBool("mqttTls", MQTT_DEFAULT_TLS);
+    mqttPrefix = preferences.getString("mqttPrefix", MQTT_DEFAULT_PREFIX);
+    mqttHAEnabled = preferences.getBool("mqttHAEnabled", HA_DISCOVERY_DEFAULT_ENABLED);
+    mqttHAPrefix = preferences.getString("mqttHAPrefix", HA_DISCOVERY_DEFAULT_PREFIX);
 
     // Other values should be loaded from LittleFS, but if needed,
     // we can load them from Preferences as a backup solution
@@ -286,6 +295,9 @@ bool ConfigManager::saveToPreferences()
     preferences.putString("mqttPassword", mqttPassword);
     preferences.putBool("mqttEnabled", mqttEnabled);
     preferences.putBool("mqttTls", mqttTls);
+    preferences.putString("mqttPrefix", mqttPrefix);
+    preferences.putBool("mqttHAEnabled", mqttHAEnabled);
+    preferences.putString("mqttHAPrefix", mqttHAPrefix);
 
     // Save WiFi configuration (as backup)
     preferences.putString("ssid", wifiSSID);
@@ -297,7 +309,9 @@ bool ConfigManager::saveToPreferences()
 
 // Add a new method to set MQTT configuration
 bool ConfigManager::setMqttConfig(const String &host, int port, const String &user,
-                                  const String &password, bool enabled, bool tls, bool saveConfig)
+                                  const String &password, bool enabled, bool tls,
+                                  const String &rootPrefix, const String &haPrefix, bool haEnable,
+                                  bool saveConfig)
 {
     mqttHost = host;
     mqttPort = port;
@@ -305,6 +319,9 @@ bool ConfigManager::setMqttConfig(const String &host, int port, const String &us
     mqttPassword = password;
     mqttEnabled = enabled;
     mqttTls = tls;
+    mqttPrefix = rootPrefix;
+    mqttHAPrefix = haPrefix;
+    mqttHAEnabled = haEnable;
 
     return saveConfig ? save() : true;
 }
@@ -341,6 +358,9 @@ void ConfigManager::resetToDefaults()
     mqttUser = MQTT_DEFAULT_USER;
     mqttPassword = MQTT_DEFAULT_PASS;
     mqttEnabled = MQTT_DEFAULT_ENABLED;
+    mqttPrefix = MQTT_DEFAULT_PREFIX;
+    mqttHAEnabled = HA_DISCOVERY_DEFAULT_ENABLED;
+    mqttHAPrefix = HA_DISCOVERY_DEFAULT_PREFIX;
 }
 
 // Get firmware version

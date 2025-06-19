@@ -102,7 +102,7 @@ bool MQTTManager::connect()
         // TODO: Some better idea than magic number delay?
         // Give HA time to subscribe this topic
         delay(500);
-        mqttClient.publish("explora/status", "online", true);
+        mqttClient.publish(String(configManager.mqttPrefix + "/status").c_str(), "online", true);
     }
     else
     {
@@ -156,6 +156,10 @@ void MQTTManager::process()
 // Publish discovery configuration for sensors
 void MQTTManager::publishDiscovery()
 {
+    if (!configManager.mqttHAEnabled) {
+        return; // Skip discovery if HA is disabled
+    }
+
     // Skip if not connected
     if (!mqttClient.connected())
     {
@@ -171,7 +175,7 @@ void MQTTManager::publishDiscovery()
     for (const auto &sensor : sensors)
     {
         // Base state topic for this sensor
-        String baseTopic = "explora/" + String(sensor.serialNumber, HEX);
+        String baseTopic = String(configManager.mqttPrefix) + "/" + String(sensor.serialNumber, HEX);
 
         // Publish discovery for each supported value type based on sensor type
         if (sensor.hasTemperature())
@@ -290,8 +294,8 @@ String MQTTManager::buildDiscoveryTopic(const SensorData &sensor, const String &
         deviceClass = "wind_direction";
 
     // Create discovery topic
-    return String(HA_DISCOVERY_PREFIX) + "/sensor/" +
-           "explora_" + String(sensor.serialNumber, HEX) + "_" + valueType + "/config";
+    return String(configManager.mqttHAPrefix) + "/sensor/" +
+           String(configManager.mqttPrefix) + "_" + String(sensor.serialNumber, HEX) + "_" + valueType + "/config";
 }
 
 // Helper function to capitalize first letter
@@ -330,10 +334,10 @@ String MQTTManager::buildDiscoveryJson(const SensorData &sensor, const String &v
     doc["value_template"] = "{{ value }}";
 
     // Unique ID
-    doc["unique_id"] = "explora_" + String(sensor.serialNumber, HEX) + "_" + valueType;
+    doc["unique_id"] = String(configManager.mqttPrefix) + "_" + String(sensor.serialNumber, HEX) + "_" + valueType;
 
     // Availability topic - use LWT (Last Will and Testament)
-    doc["availability_topic"] = "explora/status";
+    doc["availability_topic"] = String(configManager.mqttPrefix) + "/status";
     doc["payload_available"] = "online";
     doc["payload_not_available"] = "offline";
 
@@ -449,7 +453,7 @@ void MQTTManager::publishSensorData(int sensorIndex)
     }
 
     // Base topic for this sensor
-    String baseTopic = "explora/" + String(sensor->serialNumber, HEX);
+    String baseTopic = String(configManager.mqttPrefix) + "/" + String(sensor->serialNumber, HEX);
 
     // Publish each value based on sensor type
     if (sensor->hasTemperature())
@@ -521,6 +525,10 @@ void MQTTManager::publishSensorData(int sensorIndex)
 
 void MQTTManager::publishDiscoveryForSensor(int sensorIndex)
 {
+    if (!configManager.mqttHAEnabled) {
+        return; // Do not send discovery i HA is disabled
+    }
+
     if (!mqttClient.connected())
     {
         return;
@@ -535,7 +543,7 @@ void MQTTManager::publishDiscoveryForSensor(int sensorIndex)
     logger.info("Publishing MQTT discovery for sensor: " + sensor->name);
 
     // Base state topic for this sensor
-    String baseTopic = "explora/" + String(sensor->serialNumber, HEX);
+    String baseTopic = String(configManager.mqttPrefix) + "/" + String(sensor->serialNumber, HEX);
 
     // Publish each value based on sensor type
     if (sensor->hasTemperature())
@@ -624,6 +632,10 @@ void MQTTManager::disconnect()
 // Remove discovery for deleted sensor
 void MQTTManager::removeDiscoveryForSensor(uint32_t serialNumber)
 {
+    if (!configManager.mqttHAEnabled) {
+        return; // Do not send discovery if HA is disabled
+    }
+
     if (!mqttClient.connected())
     {
         return;
@@ -632,7 +644,7 @@ void MQTTManager::removeDiscoveryForSensor(uint32_t serialNumber)
     logger.info("Removing MQTT discovery for sensor with SN: " + String(serialNumber, HEX));
 
     // Create discovery topics for all possible value types
-    String baseDiscoveryTopic = String(HA_DISCOVERY_PREFIX) + "/sensor/explora_" +
+    String baseDiscoveryTopic = String(configManager.mqttHAPrefix) + "/sensor/" + String(configManager.mqttPrefix) + "_" +
                                 String(serialNumber, HEX) + "_";
 
     // Remove discovery for all possible types

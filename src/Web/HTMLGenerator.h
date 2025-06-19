@@ -75,7 +75,8 @@ public:
     static String generateConfigPage(const String &ssid, const String &password, bool configMode, const String &ip, const String &timezone);
 
     // Generate MQTT settings page
-    static String generateMqttPage(const String &host, int port, const String &user, const String &password, bool enabled, bool tls);
+    static String generateMqttPage(const String &host, int port, const String &user, const String &password, bool enabled, bool tls,
+                                    const String &prefix, bool haEnabled, String &haPrefix);
 
     // Generate sensor list page
     static String generateSensorsPage(const std::vector<SensorData> &sensors);

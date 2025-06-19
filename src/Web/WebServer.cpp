@@ -775,7 +775,11 @@ void WebPortal::handleMqtt(AsyncWebServerRequest *request)
         configManager.mqttUser,
         configManager.mqttPassword,
         configManager.mqttEnabled,
-        configManager.mqttTls);
+        configManager.mqttTls,
+        configManager.mqttPrefix,
+        configManager.mqttHAEnabled,
+        configManager.mqttHAPrefix
+    );
 
     // Send response
     request->send(200, "text/html", html);
@@ -800,11 +804,20 @@ void WebPortal::handleMqttPost(AsyncWebServerRequest *request)
         String password = request->getParam("password", true)->value();
         bool enabled = request->hasParam("enabled", true);
         bool tls = request->hasParam("tls", true);
+        String prefix = request->getParam("prefix", true)->value();
+        bool haEnabled = request->hasParam("haEnabled", true);
+        String haPrefix = request->getParam("haPrefix", true)->value();
 
         // Update configuration
-        configManager.setMqttConfig(host, port, user, password, enabled, tls);
+        configManager.setMqttConfig(host, port, user, password, enabled, tls, prefix, haPrefix, haEnabled);
 
-        logger.info("MQTT configuration updated: " + host + ":" + String(port) + ", enabled: " + String(enabled) + ", TLS: " + String(tls));
+        logger.info("MQTT configuration updated");
+        logger.info("  Host: " + host + ":" + String(port));
+        logger.info("  Enabled: " + String(enabled));
+        logger.info("  TLS: " + String(tls));
+        logger.info("  Root topic: " + prefix);
+        logger.info("  HA Enabled: " + String(haEnabled));
+        logger.info("  HA Topic: " + haPrefix);
 
         // If MQTT is enabled, reinitialize the MQTT manager
         if (mqttManager)

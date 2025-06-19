@@ -70,6 +70,9 @@ public:
     String mqttPassword; // MQTT password
     bool mqttEnabled;    // MQTT enabled flag
     bool mqttTls;        // MQTTS flag
+    String mqttPrefix;   // MQTT Topic prefix
+    String mqttHAPrefix; // MQTT Homeassistant topic prefix
+    bool mqttHAEnabled;  // MQTT Homeassistant discovery enable
 
     // Constructor
     ConfigManager(Logger &log, const char *file = CONFIG_FILE);
@@ -106,7 +109,9 @@ public:
 
     // Set MQTT configuration
     bool setMqttConfig(const String &host, int port, const String &user,
-                       const String &password, bool enabled, bool tls, bool saveConfig = true);
+                       const String &password, bool enabled, bool tls,
+                       const String &rootPrefix, const String &haPrefix, bool haEnable,
+                       bool saveConfig = true);
 
     // Set logging level
     void setLogLevel(LogLevel level, bool saveConfig = true);
