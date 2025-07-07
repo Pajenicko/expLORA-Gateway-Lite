@@ -313,6 +313,13 @@ bool ConfigManager::setMqttConfig(const String &host, int port, const String &us
                                   const String &rootPrefix, const String &haPrefix, bool haEnable,
                                   bool saveConfig)
 {
+    // Validate MQTT topic format (basic validation)
+    if (!isValidMqttTopic(rootPrefix) || !isValidMqttTopic(haPrefix))
+    {
+        logger.error("Invalid MQTT topic format");
+        return false;
+    }
+
     mqttHost = host;
     mqttPort = port;
     mqttUser = user;
@@ -341,6 +348,24 @@ bool ConfigManager::setTimezone(const String &newTimezone, bool saveConfig)
         return save();
     }
 
+    return true;
+}
+
+// Helper function to validate MQTT topic format
+bool ConfigManager::isValidMqttTopic(const String &topic)
+{
+    // Basic MQTT topic validation
+    if (topic.length() == 0 || topic.length() > 127)
+        return false;
+    
+    // Check for invalid characters
+    if (topic.indexOf('#') != -1 || topic.indexOf('+') != -1)
+        return false;
+    
+    // Check for null character
+    if (topic.indexOf('\0') != -1)
+        return false;
+    
     return true;
 }
 

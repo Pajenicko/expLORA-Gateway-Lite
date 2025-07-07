@@ -526,7 +526,7 @@ void MQTTManager::publishSensorData(int sensorIndex)
 void MQTTManager::publishDiscoveryForSensor(int sensorIndex)
 {
     if (!configManager.mqttHAEnabled) {
-        return; // Do not send discovery i HA is disabled
+        return; // Do not send discovery if HA is disabled
     }
 
     if (!mqttClient.connected())
