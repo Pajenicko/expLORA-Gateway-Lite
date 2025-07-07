@@ -25,8 +25,8 @@
 #include <HTTPClient.h>
 
 // Constructor
-SensorManager::SensorManager(Logger &log, const char *file)
-    : sensorCount(0), logger(log), sensorsFile(file)
+SensorManager::SensorManager(Logger &log, NetworkManager &nm, const char *file)
+    : sensorCount(0), logger(log), networkManager(nm), sensorsFile(file)
 {
 }
 
@@ -375,13 +375,13 @@ bool SensorManager::updateSensorData(int index, float temperature, float humidit
     sensors[index].rssi = rssi;
     sensors[index].lastSeen = millis();
 
-    if (WiFi.status() == WL_CONNECTED)
+    if (networkManager.isConnected())
     {
         forwardSensorData(index);
     }
     else
     {
-        logger.debug("Not forwarding data - WiFi not connected");
+        logger.debug("Not forwarding data - Not connected");
     }
 
     return true;

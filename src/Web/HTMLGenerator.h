@@ -25,6 +25,7 @@
 #include <vector>
 #include "../Data/SensorData.h"
 #include "../Data/Logging.h"
+#include "../Hardware/Network_Manager.h"
 
 /**
  * Class for generating HTML content
@@ -69,10 +70,10 @@ public:
     static void deinit();
 
     // Generate home page
-    static String generateHomePage(const std::vector<SensorData> &sensors);
+    static String generateHomePage(const std::vector<SensorData> &sensors, const NetworkManager &networkManager);
 
     // Generate configuration page
-    static String generateConfigPage(const String &ssid, const String &password, bool configMode, const String &ip, const String &timezone);
+    static String generateConfigPage(const String &ssid, const String &password, bool configMode, const String &ip, const String &timezone, const NetworkManager &networkManager);
 
     // Generate MQTT settings page
     static String generateMqttPage(const String &host, int port, const String &user, const String &password, bool enabled, bool tls,
@@ -94,7 +95,7 @@ public:
     static String generateAPIPage(const std::vector<SensorData> &sensors);
 
     // Generate JSON for API
-    static String generateAPIJson(const std::vector<SensorData> &sensors);
+    static String generateAPIJson(const std::vector<SensorData> &sensors, const NetworkManager &networkManager);
 
     // Optimized versions using buffer
     static void generateSensorTable(char *buffer, size_t &maxLen, const std::vector<SensorData> &sensors);

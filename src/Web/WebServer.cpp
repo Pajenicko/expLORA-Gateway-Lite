@@ -21,7 +21,6 @@
 
 #include "WebServer.h"
 #include "HTMLGenerator.h"
-#include <WiFi.h>
 #include <AsyncJson.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -29,10 +28,10 @@
 
 // Constructor
 WebPortal::WebPortal(SensorManager &sensors, Logger &log, String &ssid, String &password,
-                     bool &config_mode, ConfigManager &config, String &tz)
+                     bool &config_mode, ConfigManager &config, NetworkManager &nm, String &tz)
     : server(HTTP_PORT), sensorManager(sensors), logger(log), isAPMode(false),
       wifiSSID(ssid), wifiPassword(password), configMode(config_mode),
-      timezone(tz), configManager(config), mqttManager(nullptr)
+      timezone(tz), configManager(config), mqttManager(nullptr), networkManager(nm)
 {
 }
 
@@ -56,20 +55,12 @@ bool WebPortal::init()
 {
     logger.info("Initializing web portal");
 
-    // Create AP name (if needed)
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
-
-    String macAddress = WiFi.macAddress();
-    macAddress.replace(":", "");                      // Remove colons
-    apName = "expLORA-GW-" + macAddress.substring(6); // Use last 6 characters of MAC address
-
     // Set mode based on current configuration
-    isAPMode = configMode || (WiFi.status() != WL_CONNECTED);
+    isAPMode = configMode || !networkManager.isWiFiConnected();
 
     if (isAPMode)
     {
-        setupAP();
+        networkManager.setupAP();
     }
 
     // Setup routes
@@ -96,47 +87,6 @@ bool WebPortal::init()
     // logger.info("Web server task created on core 0");
 
     return true;
-}
-
-// AP mode initialization
-void WebPortal::setupAP()
-{
-    logger.info("Starting AP mode: " + apName);
-
-    // Full WiFi reset sequence
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-    delay(200);
-
-    // AP configuration with optimized parameters
-    WiFi.setTxPower(WIFI_POWER_19_5dBm); // Maximum power
-
-    // Set up AP mode with optimized settings
-    WiFi.mode(WIFI_AP);
-    logger.info("Setting up AP: " + apName);
-
-    // AP configuration with 4 clients max and channel 6 (less crowded usually)
-    bool apStarted = WiFi.softAP(apName.c_str());
-    delay(1000); // Give AP time to fully initialize
-
-    if (apStarted)
-    {
-        logger.info("AP setup successful");
-    }
-    else
-    {
-        logger.error("AP setup failed");
-    }
-
-    IPAddress apIP = WiFi.softAPIP();
-    logger.info("AP IP assigned: " + apIP.toString());
-
-    // Configure DNS server with custom TTL for faster responses
-    dnsServer.setTTL(30); // TTL in seconds (lower value = more responsive)
-    dnsServer.start(DNS_PORT, "*", apIP);
-    logger.info("DNS server started on port " + String(DNS_PORT));
-
-    isAPMode = true;
 }
 
 // Setup routes for web server
@@ -215,37 +165,6 @@ WebPortal::~WebPortal()
     // if (webServerTaskHandle != NULL) {
     //    vTaskDelete(webServerTaskHandle);
     //}
-
-    // Stop DNS server
-    dnsServer.stop();
-}
-
-// Process DNS requests
-void WebPortal::processDNS()
-{
-    dnsServer.processNextRequest();
-    // called automatically in handleClient()
-}
-
-// Switch between AP and client modes
-void WebPortal::setAPMode(bool enable)
-{
-    if (enable == isAPMode)
-    {
-        return; // No change
-    }
-
-    if (enable)
-    {
-        // Switch to AP mode
-        setupAP();
-    }
-    else
-    {
-        // Switch to client mode
-        dnsServer.stop();
-        isAPMode = false;
-    }
 }
 
 // Get current mode
@@ -262,7 +181,7 @@ void WebPortal::restart()
     // Reset DNS server if it was running
     if (isAPMode)
     {
-        dnsServer.stop();
+        networkManager.disableAP(); // If there will be longer APMode, it will be enabled in init again
     }
 
     // Re-initialize
@@ -287,7 +206,7 @@ void WebPortal::handleRoot(AsyncWebServerRequest *request)
     std::vector<SensorData> sensorsList = sensorManager.getActiveSensors();
 
     // Generate HTML
-    String html = HTMLGenerator::generateHomePage(sensorsList);
+    String html = HTMLGenerator::generateHomePage(sensorsList, networkManager);
 
     // Send response
     request->send(200, "text/html", html);
@@ -298,10 +217,10 @@ void WebPortal::handleConfig(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /config");
 
-    String currentIP = isAPMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+    String currentIP = isAPMode ? networkManager.getWiFiAPIP().toString() : networkManager.getWiFiIP().toString();
 
     // Generate HTML
-    String html = HTMLGenerator::generateConfigPage(wifiSSID, wifiPassword, configMode, currentIP, timezone);
+    String html = HTMLGenerator::generateConfigPage(wifiSSID, wifiPassword, configMode, currentIP, timezone, networkManager);
 
     // Send response
     request->send(200, "text/html", html);
@@ -874,7 +793,7 @@ void WebPortal::handleAPI(AsyncWebServerRequest *request)
     if (format.equalsIgnoreCase("json"))
     {
         // JSON format
-        String jsonOutput = HTMLGenerator::generateAPIJson(sensorsList);
+        String jsonOutput = HTMLGenerator::generateAPIJson(sensorsList, networkManager);
 
         // Send JSON response
         AsyncResponseStream *response = request->beginResponseStream("application/json");
@@ -955,7 +874,7 @@ void WebPortal::handleNotFound(AsyncWebServerRequest *request)
     String requestUrl = request->url();
     logger.debug("HTTP 404: " + requestUrl);
 
-    if (isAPMode)
+    if (networkManager.isWifiAPActive())
     {
         // In AP mode - captive portal - redirect all requests to config page
 
@@ -971,15 +890,15 @@ void WebPortal::handleNotFound(AsyncWebServerRequest *request)
         // For Apple devices
         if (requestUrl == "/hotspot-detect.html" || requestUrl.indexOf("captive.apple.com") >= 0)
         {
-            request->redirect("http://" + WiFi.softAPIP().toString() + "/config");
+            request->redirect("http://" + networkManager.getWiFiAPIP().toString() + "/config");
             return;
         }
 
         // For Android and Windows devices
-        if (requestUrl == "/generate_204" || requestUrl == "/ncsi.txt" ||
+        if (requestUrl == "/generate_204" || requestUrl == "/gen_204" || requestUrl == "/ncsi.txt" ||
             requestUrl.indexOf("detectportal.firefox.com") >= 0)
         {
-            request->redirect("http://" + WiFi.softAPIP().toString() + "/config");
+            request->redirect("http://" + networkManager.getWiFiAPIP().toString() + "/config");
             return;
         }
 
