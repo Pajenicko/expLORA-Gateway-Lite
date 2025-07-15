@@ -23,7 +23,6 @@
 #include <esp_heap_caps.h>
 #include <algorithm>
 #include <Arduino.h>
-#include <WiFi.h>
 #include "../config.h"
 
 // Initialization of static variables
@@ -238,7 +237,7 @@ void HTMLGenerator::addNavigation(String &html, const String &activePage)
 }
 
 // In HTMLGenerator.cpp, modify the generateHomePage method
-String HTMLGenerator::generateHomePage(const std::vector<SensorData> &sensors)
+String HTMLGenerator::generateHomePage(const std::vector<SensorData> &sensors, const NetworkManager &networkManager)
 {
     String html;
 
@@ -249,21 +248,24 @@ String HTMLGenerator::generateHomePage(const std::vector<SensorData> &sensors)
     html += "<div class='card'>";
     html += "<h2>System Status</h2>";
 
-    html += "<p><strong>Mode:</strong> " + String(WiFi.status() == WL_CONNECTED ? "Client" : "Access Point") + "</p>";
+    html += "<p><strong>Mode:</strong> " + String(networkManager.isWiFiConnected() ? "Client" : "Access Point") + "</p>";
 
-    if (WiFi.status() == WL_CONNECTED)
+    if (networkManager.isWiFiConnected())
     {
-        html += "<p><strong>WiFi:</strong> Connected to " + WiFi.SSID() + "</p>";
-        html += "<p><strong>IP:</strong> " + WiFi.localIP().toString() + "</p>";
+        html += "<p><strong>WiFi:</strong> Connected to " + networkManager.getWiFiSSID() + "</p>";
+        html += "<p><strong>IP:</strong> " + networkManager.getWiFiIP().toString() + "</p>";
     }
     else
     {
         html += "<p><strong>WiFi:</strong> Disconnected</p>";
-        if (WiFi.getMode() == WIFI_AP)
+        if (networkManager.getWiFiMode() == WIFI_AP)
         {
-            html += "<p><strong>AP IP:</strong> " + WiFi.softAPIP().toString() + "</p>";
+            html += "<p><strong>AP IP:</strong> " + networkManager.getWiFiAPIP().toString() + "</p>";
         }
     }
+
+    html += "<p><strong>WiFi MAC:</strong> " + networkManager.getWiFimacAddress() + "</p>";
+
 
     // Current time
     struct tm timeinfo;
@@ -382,7 +384,7 @@ void HTMLGenerator::generateSensorTable(char *buffer, size_t &maxLen, const std:
 }
 
 // Generating configuration page
-String HTMLGenerator::generateConfigPage(const String &ssid, const String &password, bool configMode, const String &ip, const String &timezone)
+String HTMLGenerator::generateConfigPage(const String &ssid, const String &password, bool configMode, const String &ip, const String &timezone, const NetworkManager &networkManager)
 {
     String html;
 
@@ -395,17 +397,18 @@ String HTMLGenerator::generateConfigPage(const String &ssid, const String &passw
     if (configMode)
     {
         html += "<p><strong>Mode:</strong> Access Point</p>";
-        html += "<p><strong>AP Name:</strong> " + WiFi.softAPSSID() + "</p>";
-        html += "<p><strong>AP IP:</strong> " + WiFi.softAPIP().toString() + "</p>";
+        html += "<p><strong>AP Name:</strong> " + networkManager.getWiFiAPSSID() + "</p>";
+        html += "<p><strong>AP IP:</strong> " + networkManager.getWiFiAPIP().toString() + "</p>";
     }
     else
     {
         html += "<p><strong>Mode:</strong> Client</p>";
         html += "<p><strong>SSID:</strong> " + ssid + "</p>";
-        html += "<p><strong>Status:</strong> " + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected") + "</p>";
-        if (WiFi.status() == WL_CONNECTED)
+        html += "<p><strong>Status:</strong> " + String(networkManager.isWiFiConnected() ? "Connected" : "Disconnected") + "</p>";
+        html += "<p><strong>MAC:</strong> " + networkManager.getWiFimacAddress() + "</p>";
+        if (networkManager.isWiFiConnected())
         {
-            html += "<p><strong>IP:</strong> " + WiFi.localIP().toString() + "</p>";
+            html += "<p><strong>IP:</strong> " + networkManager.getWiFiIP().toString() + "</p>";
         }
     }
     html += "</div>";
@@ -1319,7 +1322,7 @@ void HTMLGenerator::generateLogTable(char *buffer, size_t &maxLen, const LogEntr
 }
 
 // Generating JSON for API
-String HTMLGenerator::generateAPIJson(const std::vector<SensorData> &sensors)
+String HTMLGenerator::generateAPIJson(const std::vector<SensorData> &sensors, const NetworkManager &networkManager)
 {
     // Estimating JSON document size
     const size_t capacity = JSON_OBJECT_SIZE(5) + JSON_ARRAY_SIZE(sensors.size()) +
@@ -1343,7 +1346,7 @@ String HTMLGenerator::generateAPIJson(const std::vector<SensorData> &sensors)
         doc["time"] = "Time not set";
     }
 
-    doc["status"] = WiFi.status() == WL_CONNECTED ? "connected" : "disconnected";
+    doc["status"] = networkManager.isWiFiConnected() ? "connected" : "disconnected";
 
     // Sensors array
     JsonArray sensorsArray = doc.createNestedArray("sensors");

@@ -26,6 +26,7 @@
 #include <vector>
 #include "SensorData.h"
 #include "Logging.h"
+#include "../Hardware/Network_Manager.h"
 
 /**
  * Class for managing a collection of sensors
@@ -40,13 +41,14 @@ private:
     size_t sensorCount;              // Current number of sensors
     mutable std::mutex sensorMutex;  // Mutex for safe multi-threaded access
     Logger &logger;                  // Reference to logger
+    NetworkManager &networkManager;  // Reference to network manager
 
     // Filename for storing sensor configuration
     const char *sensorsFile;
 
 public:
     // Constructor
-    SensorManager(Logger &log, const char *file = SENSORS_FILE);
+    SensorManager(Logger &log, NetworkManager &nm, const char *file = SENSORS_FILE);
 
     // Destructor
     ~SensorManager();

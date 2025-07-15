@@ -24,15 +24,15 @@
 #include "config.h"
 
 // Constructor
-MQTTManager::MQTTManager(SensorManager &sensors, ConfigManager &config, Logger &log)
+MQTTManager::MQTTManager(SensorManager &sensors, ConfigManager &config, Logger &log, NetworkManager &nm)
     : mqttClient(), sensorManager(sensors), configManager(config), logger(log),
-      lastReconnectAttempt(0), lastDiscoveryUpdate(0)
+      lastReconnectAttempt(0), lastDiscoveryUpdate(0), networkManager(nm)
 {
 
     // Generate unique client ID from MAC address
     clientId = "explora-gw-";
     uint8_t mac[6];
-    WiFi.macAddress(mac);
+    networkManager.getWiFimacAddress(mac);
     for (int i = 0; i < 6; i++)
     {
         if (mac[i] < 0x10)
@@ -122,7 +122,7 @@ void MQTTManager::process()
     }
 
     // Check connection to WiFi and MQTT broker
-    if (WiFi.status() == WL_CONNECTED)
+    if (networkManager.isConnected())
     {
         if (!mqttClient.connected())
         {

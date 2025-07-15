@@ -24,12 +24,12 @@
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
-#include <DNSServer.h>
 #include "../Data/SensorManager.h"
 #include "../Data/Logging.h"
 #include "../Storage/ConfigManager.h"
 #include "../Protocol/MQTTManager.h"
 #include "OTAServer.h"
+#include "../Hardware/Network_Manager.h"
 
 /**
  * Class for web portal management
@@ -52,10 +52,11 @@ private:
     volatile bool isProcessing = false;
 
     AsyncWebServer server;        // Asynchronous web server
-    DNSServer dnsServer;          // DNS server for captive portal
     SensorManager &sensorManager; // Reference to sensor manager
     Logger &logger;               // Reference to logger
     OTAServer *otaServer;         // OTA Server
+
+    NetworkManager &networkManager; // Reference to network manager
 
     bool isAPMode; // AP mode (true) or client mode (false)
     String apName; // AP name in AP mode
@@ -65,9 +66,6 @@ private:
     String &wifiPassword;
     bool &configMode;
     String &timezone;
-
-    // AP mode initialization
-    void setupAP();
 
     ConfigManager &configManager; // Reference to configuration
 
@@ -113,7 +111,7 @@ private:
 public:
     // Constructor
     WebPortal(SensorManager &sensors, Logger &log, String &ssid, String &password,
-              bool &configMode, ConfigManager &config, String &timezone);
+              bool &configMode, ConfigManager &config, NetworkManager &nm, String &timezone);
     // Destructor
     ~WebPortal();
 
@@ -125,9 +123,6 @@ public:
 
     // Process DNS requests (for captive portal)
     void processDNS();
-
-    // Switch between AP and client modes
-    void setAPMode(bool enable);
 
     // Get current mode
     bool isInAPMode() const;

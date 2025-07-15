@@ -40,6 +40,7 @@
 #include "Hardware/LoRa_Module.h"
 #include "Hardware/PSRAM_Manager.h"
 #include "Hardware/SPI_Manager.h"
+#include "Hardware/Network_Manager.h"
 
 // Storage
 #include "Storage/ConfigManager.h"
@@ -54,18 +55,15 @@
 #include "Web/HTMLGenerator.h"
 
 // Global object instances
-Logger logger;                // Logging system
-ConfigManager *configManager; // Configuration manager
-SPIManager *spiManager;       // SPI communication manager
-LoRaModule *loraModule;       // LoRa module
-SensorManager *sensorManager; // Sensor manager
-LoRaProtocol *loraProtocol;   // LoRa protocol
-MQTTManager *mqttManager;     // MQTT Manager
-WebPortal *webPortal;         // Web interface
-
-// Timer for disabling AP mode
-unsigned long apStartTime = 0;
-bool temporaryAPMode = false;
+Logger logger;                  // Logging system
+ConfigManager *configManager;   // Configuration manager
+SPIManager *spiManager;         // SPI communication manager
+LoRaModule *loraModule;         // LoRa module
+SensorManager *sensorManager;   // Sensor manager
+LoRaProtocol *loraProtocol;     // LoRa protocol
+MQTTManager *mqttManager;       // MQTT Manager
+WebPortal *webPortal;           // Web interface
+NetworkManager *networkManager; // Network manager
 
 // File system initialization
 bool initFileSystem()
@@ -171,8 +169,11 @@ void setup()
         return;
     }
 
+    // Network manager initialization
+    networkManager = new NetworkManager(logger);
+
     // Sensor manager initialization
-    sensorManager = new SensorManager(logger);
+    sensorManager = new SensorManager(logger, *networkManager);
     if (!sensorManager->init())
     {
         logger.error("Failed to initialize sensor manager");
@@ -187,61 +188,31 @@ void setup()
     logger.info("Configuring WiFi. ConfigMode: " + String(configManager->configMode ? "true" : "false") +
                 ", SSID length: " + String(configManager->wifiSSID.length()));
 
-    // Setting timer for temporary AP mode
-    apStartTime = millis();
-    temporaryAPMode = true;
-
     if (configManager->configMode || configManager->wifiSSID.length() == 0)
     {
         // We're in configuration mode or don't have credentials - AP mode only
         logger.info("Starting in AP mode only");
-        WiFi.mode(WIFI_AP);
 
-        // Get device MAC address and create unique SSID
-        String macAddress = WiFi.macAddress();
-        macAddress.replace(":", "");                                 // Remove colons
-        String uniqueSSID = "expLORA-GW-" + macAddress.substring(6); // Use last 6 characters of MAC address
-
-        // Configure AP with unique SSID
-        WiFi.softAP(uniqueSSID.c_str());
-        logger.info("AP started with SSID: " + uniqueSSID + ", IP: " + WiFi.softAPIP().toString());
+        networkManager->setupAP();
+        networkManager->setAPTimeout(0); // Disable timeout
 
         configManager->enableConfigMode(true);
         webPortal = new WebPortal(*sensorManager, logger,
                                   configManager->wifiSSID, configManager->wifiPassword,
-                                  configManager->configMode, *configManager, configManager->timezone);
+                                  configManager->configMode, *configManager, *networkManager, configManager->timezone);
     }
     else
     {
         // We have credentials - start AP+STA mode
         logger.info("Starting in AP+STA mode (dual mode)");
-        WiFi.mode(WIFI_AP_STA);
 
-        // Get device MAC address and create unique SSID
-        String macAddress = WiFi.macAddress();
-        macAddress.replace(":", "");                                 // Remove colons
-        String uniqueSSID = "expLORA-GW-" + macAddress.substring(6); // Use last 6 characters of MAC address
-
-        // Configure AP part with unique SSID
-        WiFi.softAP(uniqueSSID.c_str());
-        logger.info("Temporary AP started with SSID: " + uniqueSSID +
-                    " (will be active for 5 minutes). IP: " + WiFi.softAPIP().toString());
-
-        // Configure STA part (client)
-        logger.info("Attempting to connect to WiFi: " + configManager->wifiSSID);
-        WiFi.begin(configManager->wifiSSID.c_str(), configManager->wifiPassword.c_str());
-
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 20)
-        {
-            delay(500);
-            Serial.print(".");
-            attempts++;
+        if (networkManager->setupAP()) {
+            networkManager->setAPTimeout(AP_TIMEOUT); // In Dual mode, we have timeout for AP mode
+            logger.info("Temporary AP started with SSID: " + networkManager->getWiFiAPSSID() +
+                        " (will be active for 5 minutes). IP: " + networkManager->getWiFiAPIP().toString());
         }
 
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            logger.info("WiFi connected! IP: " + WiFi.localIP().toString());
+        if (networkManager->wifiSTAConnect(configManager->wifiSSID, configManager->wifiPassword)) {
             configManager->enableConfigMode(false);
 
             // Initialize NTP
@@ -251,18 +222,17 @@ void setup()
             logger.info("NTP time set");
             logger.setTimeInitialized(true);
         }
-        else
-        {
-            logger.warning("Failed to connect to WiFi after " + String(attempts) + " attempts. SSID: " +
-                           configManager->wifiSSID + ", Continuing in AP mode only");
+        else {
+            logger.warning("Continuing in AP mode only");
+
             // Switch to AP mode only
-            WiFi.mode(WIFI_AP);
+            networkManager->wifiSTADisconnect();
         }
 
         // Web interface initialization - will be accessible via AP and client (if connected)
         webPortal = new WebPortal(*sensorManager, logger,
                                   configManager->wifiSSID, configManager->wifiPassword,
-                                  configManager->configMode, *configManager, configManager->timezone);
+                                  configManager->configMode, *configManager, *networkManager, configManager->timezone);
     }
 
     // LoRa module initialization
@@ -282,12 +252,12 @@ void setup()
     // Web portal initialization if not already initialized
     if (!webPortal)
     {
-        webPortal = new WebPortal(*sensorManager, logger, configManager->wifiSSID, configManager->wifiPassword, configManager->configMode, *configManager,
-                                  configManager->timezone);
+        webPortal = new WebPortal(*sensorManager, logger, configManager->wifiSSID, configManager->wifiPassword, configManager->configMode,
+            *configManager, *networkManager, configManager->timezone);
     }
 
     // Initialize MQTT Manager if WiFi is connected
-    mqttManager = new MQTTManager(*sensorManager, *configManager, logger);
+    mqttManager = new MQTTManager(*sensorManager, *configManager, logger, *networkManager);
     if (!mqttManager->init())
     {
         logger.debug("MQTT Manager initialization skipped (disabled in config)");
@@ -317,27 +287,6 @@ void loop()
 {
     esp_task_wdt_reset();
 
-    // Check timer for temporary AP mode
-    if (temporaryAPMode && !configManager->configMode && configManager->wifiSSID.length() > 0)
-    {
-        if (millis() - apStartTime > AP_TIMEOUT)
-        {
-            // Time expired, switch to client mode if successfully connected
-            if (WiFi.status() == WL_CONNECTED)
-            {
-                logger.info("Temporary AP timeout reached. Switching to client mode only.");
-                WiFi.mode(WIFI_STA);
-                temporaryAPMode = false;
-            }
-            else
-            {
-                // Not connected as a client, keep AP running
-                logger.info("Temporary AP timeout reached but WiFi client not connected. Keeping AP mode active.");
-                temporaryAPMode = false; // Stop timer, but AP remains active
-            }
-        }
-    }
-
     // Process LoRa packets
     // if (loraModule && loraProtocol) {
     //    if (LoRaModule::hasInterrupt()) {
@@ -346,12 +295,6 @@ void loop()
     //    }
     //}
 
-    // If in AP mode, process DNS captive portal:
-    if (webPortal && webPortal->isInAPMode())
-    {
-        webPortal->processDNS(); // This method internally calls dnsServer.processNextRequest();
-    }
-
     // Handle web interface
     if (webPortal)
     {
@@ -359,7 +302,7 @@ void loop()
     }
 
     // Process MQTT communication
-    if (mqttManager && WiFi.status() == WL_CONNECTED)
+    if (mqttManager && networkManager->isConnected())
     {
         mqttManager->process();
     }
@@ -371,32 +314,30 @@ void loop()
         if (loraProtocol->processReceivedPacket())
         {
             // If we have a mqttManager and it's connected, publish the latest sensor data
-            if (mqttManager && WiFi.status() == WL_CONNECTED)
+            if (mqttManager && networkManager->isConnected())
             {
                 mqttManager->publishSensorData(loraProtocol->getLastProcessedSensorIndex());
             }
         }
     }
 
+    // Process network stuff
+    if (networkManager)
+    {
+        networkManager->process();
+    }
+
+    // TODO: Move this to network manager process loop
     // Check WiFi connection and reconnect if needed
-    if (!configManager->configMode && WiFi.status() != WL_CONNECTED)
+    if (!configManager->configMode && !networkManager->isWiFiConnected())
     {
         unsigned long now = millis();
         if (now - configManager->lastWifiAttempt > WIFI_RECONNECT_INTERVAL)
         {
             logger.info("Attempting to reconnect to WiFi...");
             configManager->lastWifiAttempt = now;
-            WiFi.begin(configManager->wifiSSID.c_str(), configManager->wifiPassword.c_str());
 
-            int attempts = 0;
-            while (WiFi.status() != WL_CONNECTED && attempts < 10)
-            {
-                delay(500);
-                Serial.print(".");
-                attempts++;
-            }
-
-            if (WiFi.status() == WL_CONNECTED)
+            if (networkManager->wifiSTAConnect(configManager->wifiSSID, configManager->wifiPassword))
             {
                 logger.info("WiFi reconnected! IP: " + WiFi.localIP().toString());
 
