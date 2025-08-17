@@ -93,7 +93,9 @@
 #define MQTT_DEFAULT_ENABLED false
 #define MQTT_DEFAULT_TLS false
 #define MQTT_RECONNECT_INTERVAL 30000 // 30 seconds in milliseconds
-#define HA_DISCOVERY_PREFIX "homeassistant"
+#define MQTT_DEFAULT_PREFIX "explora"
+#define HA_DISCOVERY_DEFAULT_ENABLED true
+#define HA_DISCOVERY_DEFAULT_PREFIX "homeassistant"
 
 // CORS headers for API
 #define CORS_HEADER_NAME "Access-Control-Allow-Origin"

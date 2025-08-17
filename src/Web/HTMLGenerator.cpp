@@ -456,7 +456,8 @@ String HTMLGenerator::generateConfigPage(const String &ssid, const String &passw
     return html;
 }
 // Generate MQTT Configuration Page
-String HTMLGenerator::generateMqttPage(const String &host, int port, const String &user, const String &password, bool enabled, bool tls)
+String HTMLGenerator::generateMqttPage(const String &host, int port, const String &user, const String &password, bool enabled, bool tls,
+                                       const String &prefix, bool haEnabled, String &haPrefix)
 {
     String html;
 
@@ -503,6 +504,24 @@ String HTMLGenerator::generateMqttPage(const String &host, int port, const Strin
     html += "<div class='form-group'>";
     html += "<label for='password'>Password (optional):</label>";
     html += "<input type='password' id='password' name='password' value='" + password + "'>";
+    html += "</div>";
+
+    // Root prefix
+    html += "<div class='form-group'>";
+    html += "<label for='prefix'>Root topic:</label>";
+    html += "<input type='text' id='prefix' name='prefix' value='" + prefix + "'>";
+    html += "</div>";
+
+    // Home assistant discovery checkbox
+    html += "<div class='form-group'>";
+    html += "<label for='tls'>Enable HA Discovery:</label>";
+    html += "<input type='checkbox' id='haEnabled' name='haEnabled' value='0'" + String(haEnabled ? " checked" : "") + ">";
+    html += "</div>";
+
+    // HA Prefix
+    html += "<div class='form-group'>";
+    html += "<label for='haPrefix'>HA discovery topic:</label>";
+    html += "<input type='text' id='haPrefix' name='haPrefix' value='" + haPrefix + "'>";
     html += "</div>";
 
     html += "<input type='submit' value='Save MQTT Settings'>";
