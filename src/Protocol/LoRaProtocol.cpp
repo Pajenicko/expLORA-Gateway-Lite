@@ -576,9 +576,11 @@ bool LoRaProtocol::isValidPacket(uint8_t *buf, uint8_t len)
             return false;
         }
 
-        // Wind direction check (0-359 degrees)
+        // Wind direction check (0-360 degrees) to support both 0 - 359 and 1 - 360
+        // We allow 0-359 for compatibility with existing sensors
+        // and 1-360 for new sensors that use 1-360 range
         uint16_t windDir = ((uint16_t)buf[16] << 8) | buf[17];
-        if (windDir > 359)
+        if (windDir > 360)
         {
             logger.warning("Invalid wind direction: " + String(windDir));
             return false;

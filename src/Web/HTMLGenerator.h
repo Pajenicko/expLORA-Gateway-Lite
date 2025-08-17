@@ -78,7 +78,7 @@ public:
     static String generateMqttPage(const String &host, int port, const String &user, const String &password, bool enabled, bool tls);
 
     // Generate sensor list page
-    static String generateSensorsPage(const std::vector<SensorData> &sensors);
+    static String generateSensorsPage(const std::vector<ActiveSensorEntry>& sensors);
 
     // Generate sensor add page
     static String generateSensorAddPage();

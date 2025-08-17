@@ -33,6 +33,7 @@
  * Handles adding, modifying, and deleting sensors, searching for them,
  * and managing their data. Stores sensor configuration in the file system.
  */
+
 class SensorManager
 {
 private:
@@ -91,6 +92,9 @@ public:
 
     // Get list of all active sensors (configured)
     std::vector<SensorData> getActiveSensors() const;
+
+    // Get list of active sensors (configured) with real index
+    std::vector<ActiveSensorEntry> getActiveSensorEntries() const;
 
     // Save sensor configuration to file
     bool saveSensors(bool lockMutex);

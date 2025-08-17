@@ -348,3 +348,8 @@ struct SensorData
         }
     }
 };
+
+struct ActiveSensorEntry {
+    size_t       index;   // real index in the sensors array
+    SensorData   data;
+};

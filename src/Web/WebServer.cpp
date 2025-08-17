@@ -376,7 +376,7 @@ void WebPortal::handleSensors(AsyncWebServerRequest *request)
     logger.debug("HTTP request: GET /sensors");
 
     // Get list of sensors
-    std::vector<SensorData> sensorsList = sensorManager.getActiveSensors();
+    std::vector<ActiveSensorEntry> sensorsList = sensorManager.getActiveSensorEntries();
 
     // Generate HTML
     String html = HTMLGenerator::generateSensorsPage(sensorsList);

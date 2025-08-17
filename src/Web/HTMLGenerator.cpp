@@ -19,7 +19,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
- #include "HTMLGenerator.h"
+#include "HTMLGenerator.h"
 #include <esp_heap_caps.h>
 #include <algorithm>
 #include <Arduino.h>
@@ -514,52 +514,47 @@ String HTMLGenerator::generateMqttPage(const String &host, int port, const Strin
 }
 
 // Generating page with sensor list
-String HTMLGenerator::generateSensorsPage(const std::vector<SensorData> &sensors)
+String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &entries)
 {
     String html;
-    // Adding header
     addHtmlHeader(html, "Sensors");
 
-    // Sensor list
-    html += "<div class='card'>";
-    html += "<h2>Configured Sensors</h2>";
+    html += "<div class='card'><h2>Configured Sensors</h2>";
 
-    if (sensors.empty())
+    if (entries.empty())
     {
         html += "<p>No sensors configured yet.</p>";
     }
     else
     {
-        html += "<table>";
-        html += "<tr><th>Name</th><th>Type</th><th>Serial Number</th><th>Last Seen</th><th>Actions</th></tr>";
+        html += "<table><tr>"
+                "<th>Name</th><th>Type</th><th>Serial Number</th>"
+                "<th>Last Seen</th><th>Actions</th></tr>";
 
-        for (size_t i = 0; i < sensors.size(); i++)
+        for (const auto &entry :  entries)
         {
-            const auto &sensor = sensors[i];
-            if (sensor.configured)
-            {
-                html += "<tr>";
-                html += "<td>" + sensor.name + "</td>";
-                html += "<td>" + sensorTypeToString(sensor.deviceType) + "</td>";
-                html += "<td>" + String(sensor.serialNumber, HEX) + "</td>";
-                html += "<td>" + sensor.getLastSeenString() + "</td>";
-                html += "<td>";
-                html += "<a href='/sensors/edit?index=" + String(i) + "' class='btn'>Edit</a> ";
-                html += "<a href='/sensors/delete?index=" + String(i) + "' class='btn btn-delete' onclick='return confirm(\"Are you sure you want to delete this sensor?\")'>Delete</a>";
-                html += "</td>";
-                html += "</tr>";
-            }
-        }
+            const auto &s = entry.data;
+            size_t idx = entry.index; // ← skutečný index
 
+            html += "<tr>";
+            html += "<td>" + s.name + "</td>";
+            html += "<td>" + sensorTypeToString(s.deviceType) + "</td>";
+            html += "<td>" + String(s.serialNumber, HEX) + "</td>";
+            html += "<td>" + s.getLastSeenString() + "</td>";
+            html += "<td>";
+            html += "<a class='btn' href='/sensors/edit?index=" + String(idx) + "'>Edit</a> ";
+            html += "<a class='btn btn-delete' "
+                    "href='/sensors/delete?index=" +
+                    String(idx) + "' "
+                                  "onclick='return confirm(\"Are you sure you want to delete this sensor?\")'>Delete</a>";
+            html += "</td></tr>";
+        }
         html += "</table>";
     }
 
-    html += "<p><a href='/sensors/add' class='btn'>Add New Sensor</a></p>";
+    html += "<p><a class='btn' href='/sensors/add'>Add New Sensor</a></p>";
     html += "</div>";
-
-    // Adding footer
     addHtmlFooter(html);
-
     return html;
 }
 

@@ -204,6 +204,10 @@ bool SensorManager::updateSensorData(int index, float temperature, float humidit
 
     // For wind direction, ensure value stays in 0-359 range
     windDirection = (windDirection + sensors[index].windDirectionCorrection) % 360;
+    if (windDirection == 0)
+    {
+        windDirection = 360; // Convert 0 to 360 for consistency
+    }
 
     rainAmount *= sensors[index].rainAmountCorrection;
     rainRate *= sensors[index].rainRateCorrection;
@@ -614,6 +618,21 @@ std::vector<SensorData> SensorManager::getAllSensors() const
     return result;
 }
 
+std::vector<ActiveSensorEntry> SensorManager::getActiveSensorEntries() const
+{
+    std::lock_guard<std::mutex> lock(sensorMutex);
+
+    std::vector<ActiveSensorEntry> result;
+    for (size_t i = 0; i < sensorCount; ++i)
+    {
+        if (sensors[i].configured)
+        {
+            result.push_back({ i, sensors[i] });
+        }
+    }
+    return result;
+}
+
 // Get list of all active sensors (configured)
 std::vector<SensorData> SensorManager::getActiveSensors() const
 {
@@ -682,15 +701,27 @@ bool SensorManager::saveSensors(bool lockMutex)
         }
     }
     logger.info("Serializing sensors to JSON");
-    // Serialize JSON to file
-    if (serializeJson(doc, file) == 0)
+    
+    String jsonString;
+    size_t jsonSize = serializeJson(doc, jsonString);
+    if (jsonSize == 0)
     {
-        logger.info("Failed to write sensors to file");
+        logger.error("Failed to serialize sensors to JSON");
         file.close();
         return false;
     }
 
+    // Write JSON string to file
+    size_t bytesWritten = file.print(jsonString);
+    file.flush(); // Ensure data is written to flash
     file.close();
+
+    if (bytesWritten != jsonSize)
+    {
+        logger.error("Failed to write complete JSON to file");
+        return false;
+    }
+
     logger.info("Saved " + String(sensorArray.size()) + " sensors to " + String(sensorsFile));
     return true;
 }
@@ -722,11 +753,33 @@ bool SensorManager::loadSensors()
         return false;
     }
 
+    // Check file size
+    size_t fileSize = file.size();
+    if (fileSize == 0)
+    {
+        logger.warning("Sensors file is empty, starting with empty configuration");
+        file.close();
+        LittleFS.remove(sensorsFile); // Remove empty file
+        return true;
+    }
+
+    // Read content and check for whitespace-only files
+    String fileContent = file.readString();
+    file.close();
+
+    fileContent.trim();
+    if (fileContent.length() == 0)
+    {
+        logger.warning("Sensors file contains only whitespace, removing it");
+        LittleFS.remove(sensorsFile);
+        return true;
+    }
+
     // Create JSON document
     DynamicJsonDocument doc(4096); // Sufficiently large buffer
 
     // Deserialize JSON from file
-    DeserializationError error = deserializeJson(doc, file);
+    DeserializationError error = deserializeJson(doc, fileContent);
     file.close();
 
     if (error)
