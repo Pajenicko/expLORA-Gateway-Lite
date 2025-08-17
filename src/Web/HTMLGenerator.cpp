@@ -125,6 +125,36 @@ void HTMLGenerator::addHtmlFooter(String &html)
 {
     html += "<footer>";
     html += "<p>expLORA Gateway Lite v" + String(FIRMWARE_VERSION) + " &copy; 2025</p>";
+    html += "<p><button onclick='checkUpdate()' class='btn' style='font-size: 11px; padding: 5px 10px;'>Check Update</button></p>";
+    html += "<script>";
+    html += "function checkUpdate() {";
+    html += "  fetch('/firmware/check')";
+    html += "    .then(response => response.json())";
+    html += "    .then(data => {";
+    html += "      if (data.version && data.version !== '" + String(FIRMWARE_VERSION) + "') {";
+    html += "        if (confirm('New version ' + data.version + ' available. Update now?')) {";
+    html += "          updateFirmware(data.url);";
+    html += "        }";
+    html += "      } else {";
+    html += "        alert('You have the latest version: " + String(FIRMWARE_VERSION) + "');";
+    html += "      }";
+    html += "    })";
+    html += "    .catch(err => alert('Update check failed: ' + err));";
+    html += "}";
+    html += "function updateFirmware(url) {";
+    html += "  const formData = new FormData();";
+    html += "  formData.append('url', url);";
+    html += "  fetch('/firmware/update', { method: 'POST', body: formData })";
+    html += "    .then(response => response.json())";
+    html += "    .then(data => {";
+    html += "      if (data.status) {";
+    html += "        alert('Update started. Device will reboot when complete.');";
+    html += "      } else {";
+    html += "        alert('Update failed: ' + data.error);";
+    html += "      }";
+    html += "    });";
+    html += "}";
+    html += "</script>";
     html += "</footer>";
 
     // Adding JavaScript

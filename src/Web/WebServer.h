@@ -99,6 +99,9 @@ private:
     void handleAPI(AsyncWebServerRequest *request);
     void handleMqtt(AsyncWebServerRequest *request);
     void handleMqttPost(AsyncWebServerRequest *request);
+    void handleFirmwareVersion(AsyncWebServerRequest *request);
+    void handleFirmwareCheck(AsyncWebServerRequest *request);
+    void handleFirmwareUpdate(AsyncWebServerRequest *request);
     void handleReboot(AsyncWebServerRequest *request);
     void handleNotFound(AsyncWebServerRequest *request);
 

@@ -25,6 +25,8 @@
 #include <AsyncJson.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <HTTPClient.h>
+#include <Update.h>
 #include "../config.h"
 
 // Constructor
@@ -79,8 +81,10 @@ bool WebPortal::init()
     server.begin();
     logger.info("Web server started on port " + String(HTTP_PORT));
 
+#if ENABLE_ELEGANT_OTA
     otaServer = new OTAServer(logger, server);
     otaServer->init();
+#endif
 
     // Create task on core 0 for DNS and other processing
     // xTaskCreatePinnedToCore(
@@ -187,6 +191,11 @@ void WebPortal::setupRoutes()
         // API
         server.on("/api", HTTP_GET, std::bind(&WebPortal::handleAPI, this, std::placeholders::_1));
 
+        // Firmware update endpoints
+        server.on("/firmware/version", HTTP_GET, std::bind(&WebPortal::handleFirmwareVersion, this, std::placeholders::_1));
+        server.on("/firmware/check", HTTP_GET, std::bind(&WebPortal::handleFirmwareCheck, this, std::placeholders::_1));
+        server.on("/firmware/update", HTTP_POST, std::bind(&WebPortal::handleFirmwareUpdate, this, std::placeholders::_1));
+
         // Reboot
         server.on("/reboot", HTTP_GET, std::bind(&WebPortal::handleReboot, this, std::placeholders::_1));
     }
@@ -205,7 +214,9 @@ void WebPortal::handleClient()
     // We keep this method for compatibility
 
     // This will handle auto-reboot after OTA process
+#if ENABLE_ELEGANT_OTA
     otaServer->process();
+#endif
 }
 
 // Ensure proper cleanup in the destructor
@@ -991,4 +1002,105 @@ void WebPortal::handleNotFound(AsyncWebServerRequest *request)
         // In normal mode - 404
         request->send(404, "text/plain", "404: Not Found");
     }
+}
+
+// Handle firmware version request
+void WebPortal::handleFirmwareVersion(AsyncWebServerRequest *request)
+{
+    logger.debug("HTTP request: GET /firmware/version");
+    
+    String json = "{\"version\":\"" + String(FIRMWARE_VERSION) + "\"}";
+    request->send(200, "application/json", json);
+}
+
+// Handle firmware check request
+void WebPortal::handleFirmwareCheck(AsyncWebServerRequest *request)
+{
+    logger.debug("HTTP request: GET /firmware/check");
+    
+    // Create HTTP client to check remote version
+    HTTPClient http;
+    http.begin(FIRMWARE_UPDATE_URL);
+    http.addHeader("User-Agent", "expLORA-Gateway/" + String(FIRMWARE_VERSION));
+    
+    int httpCode = http.GET();
+    String response = "";
+    
+    if (httpCode == HTTP_CODE_OK) {
+        response = http.getString();
+        logger.info("Firmware check successful");
+    } else {
+        logger.error("Firmware check failed: HTTP " + String(httpCode));
+        response = "{\"error\":\"Failed to check remote version\",\"code\":" + String(httpCode) + "}";
+    }
+    
+    http.end();
+    request->send(httpCode == HTTP_CODE_OK ? 200 : 500, "application/json", response);
+}
+
+// Handle firmware update request
+void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request)
+{
+    logger.debug("HTTP request: POST /firmware/update");
+    
+    if (!request->hasParam("url", true)) {
+        request->send(400, "application/json", "{\"error\":\"Missing firmware URL\"}");
+        return;
+    }
+    
+    String firmwareUrl = request->getParam("url", true)->value();
+    logger.info("Starting firmware update from: " + firmwareUrl);
+    
+    // Create HTTP client for firmware download
+    HTTPClient http;
+    http.begin(firmwareUrl);
+    http.addHeader("User-Agent", "expLORA-Gateway/" + String(FIRMWARE_VERSION));
+    
+    int httpCode = http.GET();
+    
+    if (httpCode != HTTP_CODE_OK) {
+        logger.error("Failed to download firmware: HTTP " + String(httpCode));
+        request->send(500, "application/json", "{\"error\":\"Failed to download firmware\"}");
+        http.end();
+        return;
+    }
+    
+    int contentLength = http.getSize();
+    if (contentLength <= 0) {
+        logger.error("Invalid firmware file size");
+        request->send(500, "application/json", "{\"error\":\"Invalid firmware file\"}");
+        http.end();
+        return;
+    }
+    
+    // Start OTA update
+    if (!Update.begin(contentLength)) {
+        logger.error("OTA update failed to begin");
+        request->send(500, "application/json", "{\"error\":\"OTA update failed to begin\"}");
+        http.end();
+        return;
+    }
+    
+    // Send immediate response before starting update
+    request->send(200, "application/json", "{\"status\":\"Update started\",\"size\":" + String(contentLength) + "}");
+    
+    // Download and flash firmware
+    WiFiClient* client = http.getStreamPtr();
+    size_t written = Update.writeStream(*client);
+    
+    if (written == contentLength) {
+        logger.info("Firmware update completed successfully");
+    } else {
+        logger.error("Firmware update failed: written " + String(written) + " of " + String(contentLength));
+    }
+    
+    if (Update.end()) {
+        logger.info("OTA update finished, rebooting...");
+        delay(1000);
+        ESP.restart();
+    } else {
+        logger.error("OTA update error: " + String(Update.getError()));
+    }
+    
+    http.end();
 }

@@ -24,6 +24,10 @@
 // Firmware version
 #define FIRMWARE_VERSION "1.0.9"
 
+// OTA Configuration
+#define ENABLE_ELEGANT_OTA false
+#define FIRMWARE_UPDATE_URL "https://pajenicko.cz/webflash/explora-gw-lite-autoupdate.json"
+
 // LoRa registers
 #define REG_FIFO 0x00
 #define REG_OP_MODE 0x01
