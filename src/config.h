@@ -22,7 +22,7 @@
 #pragma once
 
 // Firmware version
-#define FIRMWARE_VERSION "1.0.9"
+#define FIRMWARE_VERSION "1.1.0"
 
 // OTA Configuration
 #define ENABLE_ELEGANT_OTA false
