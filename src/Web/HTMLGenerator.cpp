@@ -122,40 +122,72 @@ void HTMLGenerator::addHtmlHeader(String &html, const String &title, bool isAPMo
 
 // Adding HTML footer code
 void HTMLGenerator::addHtmlFooter(String &html)
-{
+{  
     html += "<footer>";
     html += "<p>expLORA Gateway Lite v" + String(FIRMWARE_VERSION) + " &copy; 2025</p>";
-    html += "<p><button onclick='checkUpdate()' class='btn' style='font-size: 11px; padding: 5px 10px;'>Check Update</button></p>";
+    html += "<p><button id='btnUpdate' onclick='checkUpdate()' class='btn' style='font-size:11px;padding:5px 10px;'>Check Update</button></p>";
+
+    /* OTA banner (zobrazí se hned po startu update) */
+    html += "<div id='otaNotice' style='display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:9999;background:#222;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.25);'>";
+    html += "  <span id='otaMsg'>Firmware update started. Please wait ~2 minutes. The device will reboot automatically.</span>";
+    html += "</div>";
+
     html += "<script>";
-    html += "function checkUpdate() {";
-    html += "  fetch('/firmware/check')";
-    html += "    .then(response => response.json())";
-    html += "    .then(data => {";
-    html += "      if (data.version && data.version !== '" + String(FIRMWARE_VERSION) + "') {";
-    html += "        if (confirm('New version ' + data.version + ' available. Update now?')) {";
-    html += "          updateFirmware(data.url);";
+    html += "(function(){";
+    html += "  function showNotice(msg){";
+    html += "    var n=document.getElementById('otaNotice');";
+    html += "    var m=document.getElementById('otaMsg');";
+    html += "    if(m&&msg) m.textContent=msg;";
+    html += "    if(n) n.style.display='block';";
+    html += "  }";
+    html += "  function hideNotice(){ var n=document.getElementById('otaNotice'); if(n) n.style.display='none'; }";
+
+    html += "  function parseJsonSafe(text){ try{ return JSON.parse(text); }catch(e){ return null; } }";
+
+    html += "  window.checkUpdate = function(){";
+    html += "    fetch('/firmware/check')";
+    html += "      .then(function(response){";
+    html += "        return response.text().then(function(text){ return { ok: response.ok, status: response.status, data: parseJsonSafe(text), raw:text }; });";
+    html += "      })";
+    html += "      .then(function(res){";
+    html += "        if(!res.ok){ throw new Error((res.data && (res.data.error||res.data.message)) || ('HTTP '+res.status)); }";
+    html += "        var d=res.data; if(!d){ throw new Error('Bad JSON: '+res.raw); }";
+    html += "        if(d.version && d.version !== '" + String(FIRMWARE_VERSION) + "'){";
+    html += "          if(confirm('New version '+d.version+' available. Update now?')){";
+    html += "            window.updateFirmware(d.url);";
+    html += "          }";
+    html += "        } else {";
+    html += "          alert('You have the latest version: " + String(FIRMWARE_VERSION) + "');";
     html += "        }";
-    html += "      } else {";
-    html += "        alert('You have the latest version: " + String(FIRMWARE_VERSION) + "');";
-    html += "      }";
+    html += "      })";
+    html += "      .catch(function(err){ alert('Update check failed: '+err.message); });";
+    html += "  };";
+
+    html += "  window.updateFirmware = function(url){";
+    html += "    var btn=document.getElementById('btnUpdate'); if(btn) btn.disabled=true;";
+    html += "    showNotice('Firmware update started. Please wait ~2 minutes. Do not power off.');";
+    html += "    fetch('/firmware/update',{";
+    html += "      method:'POST',";
+    html += "      headers:{'Content-Type':'application/x-www-form-urlencoded'},";
+    html += "      body:'url='+encodeURIComponent(url)";
     html += "    })";
-    html += "    .catch(err => alert('Update check failed: ' + err));";
-    html += "}";
-    html += "function updateFirmware(url) {";
-    html += "  const formData = new FormData();";
-    html += "  formData.append('url', url);";
-    html += "  fetch('/firmware/update', { method: 'POST', body: formData })";
-    html += "    .then(response => response.json())";
-    html += "    .then(data => {";
-    html += "      if (data.status) {";
-    html += "        alert('Update started. Device will reboot when complete.');";
-    html += "      } else {";
-    html += "        alert('Update failed: ' + data.error);";
-    html += "      }";
-    html += "    });";
-    html += "}";
+    html += "    .then(function(response){";
+    html += "      return response.text().then(function(text){ return { ok: response.ok, status: response.status, data: parseJsonSafe(text), raw:text }; });";
+    html += "    })";
+    html += "    .then(function(res){";
+    html += "      if(!res.ok){ throw new Error((res.data && (res.data.error||res.data.message)) || ('HTTP '+res.status)); }";
+    html += "      if(res.data && res.data.message){ showNotice(res.data.message); }";
+    html += "    })";
+    html += "    .catch(function(err){";
+    html += "      console.error('Firmware update error:', err);";
+    html += "      showNotice('Update request sent. Device may already be updating. If nothing happens, retry. Error: '+err.message);";
+    html += "    })";
+    html += "    .finally(function(){ if(btn) btn.disabled=false; });";
+    html += "  };";
+    html += "})();";
     html += "</script>";
     html += "</footer>";
+
 
     // Adding JavaScript
     addJavaScript(html);
@@ -259,7 +291,9 @@ void HTMLGenerator::addNavigation(String &html, const String &activePage)
     html += "<a href='/mqtt' class='" + String(activePage == "MQTT" ? "active" : "") + "'>MQTT</a>";
     html += "<a href='/logs' class='" + String(activePage == "Logs" ? "active" : "") + "'>Logs</a>";
     html += "<a href='/api' class='" + String(activePage == "API" ? "active" : "") + "'>API</a>";
+#if ENABLE_ELEGANT_OTA
     html += "<a href='/update'>Update</a>";
+#endif
     html += "<a href='/reboot' onclick=\"return confirm('Are you sure you want to reboot the device?');\">Reboot</a>";
     html += "<a href='javascript:void(0);' class='icon' onclick='toggleMenu()'>&#9776;</a>";
     html += "</nav>";

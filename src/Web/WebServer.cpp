@@ -24,6 +24,8 @@
 #include <WiFi.h>
 #include <AsyncJson.h>
 #include <ArduinoJson.h>
+#include <esp_ota_ops.h>
+#include <esp_task_wdt.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -1039,68 +1041,162 @@ void WebPortal::handleFirmwareCheck(AsyncWebServerRequest *request)
 }
 
 // Handle firmware update request
-void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request)
-{
-    logger.debug("HTTP request: POST /firmware/update");
-    
-    if (!request->hasParam("url", true)) {
-        request->send(400, "application/json", "{\"error\":\"Missing firmware URL\"}");
-        return;
-    }
-    
-    String firmwareUrl = request->getParam("url", true)->value();
-    logger.info("Starting firmware update from: " + firmwareUrl);
-    
-    // Create HTTP client for firmware download
-    HTTPClient http;
-    http.begin(firmwareUrl);
-    http.addHeader("User-Agent", "expLORA-Gateway/" + String(FIRMWARE_VERSION));
-    
-    int httpCode = http.GET();
-    
-    if (httpCode != HTTP_CODE_OK) {
-        logger.error("Failed to download firmware: HTTP " + String(httpCode));
-        request->send(500, "application/json", "{\"error\":\"Failed to download firmware\"}");
-        http.end();
-        return;
-    }
-    
-    int contentLength = http.getSize();
-    if (contentLength <= 0) {
-        logger.error("Invalid firmware file size");
-        request->send(500, "application/json", "{\"error\":\"Invalid firmware file\"}");
-        http.end();
-        return;
-    }
-    
-    // Start OTA update
-    if (!Update.begin(contentLength)) {
-        logger.error("OTA update failed to begin");
-        request->send(500, "application/json", "{\"error\":\"OTA update failed to begin\"}");
-        http.end();
-        return;
-    }
-    
-    // Send immediate response before starting update
-    request->send(200, "application/json", "{\"status\":\"Update started\",\"size\":" + String(contentLength) + "}");
-    
-    // Download and flash firmware
-    WiFiClient* client = http.getStreamPtr();
-    size_t written = Update.writeStream(*client);
-    
-    if (written == contentLength) {
-        logger.info("Firmware update completed successfully");
-    } else {
-        logger.error("Firmware update failed: written " + String(written) + " of " + String(contentLength));
-    }
-    
-    if (Update.end()) {
-        logger.info("OTA update finished, rebooting...");
-        delay(1000);
-        ESP.restart();
-    } else {
-        logger.error("OTA update error: " + String(Update.getError()));
-    }
-    
+void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
+  logger.debug("HTTP request: POST /firmware/update");
+
+  if (!request->hasParam("url", true)) {
+    request->send(400, "application/json", "{\"error\":\"Missing firmware URL\"}");
+    return;
+  }
+
+  const String firmwareUrl = request->getParam("url", true)->value();
+  logger.info("Starting firmware update from: " + firmwareUrl);
+
+  HTTPClient http;
+  if (!http.begin(firmwareUrl)) {
+    request->send(500, "application/json", "{\"error\":\"HTTP begin failed\"}");
+    return;
+  }
+  http.addHeader("User-Agent", "explora-gw-lite/" + String(FIRMWARE_VERSION));
+
+  const int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    logger.error("FW download failed: HTTP " + String(httpCode));
+    request->send(502, "application/json", "{\"error\":\"Firmware download failed\"}");
     http.end();
+    return;
+  }
+
+  // Content-Length může být -1 u chunked
+  const int contentLength = http.getSize();
+
+  // Cílový OTA slot + kontrola velikosti
+  const esp_partition_t* ota = esp_ota_get_next_update_partition(nullptr);
+  if (!ota) {
+    request->send(500, "application/json", "{\"error\":\"No OTA partition\"}");
+    http.end();
+    return;
+  }
+  if (contentLength > 0 && (size_t)contentLength > ota->size) {
+    logger.error("FW too large: " + String(contentLength) + " > " + String(ota->size));
+    request->send(413, "application/json", "{\"error\":\"Firmware too large for OTA slot\"}");
+    http.end();
+    return;
+  }
+
+  // Odmapovat FS, aby flash nebyla držena MMU
+  LittleFS.end();
+
+  // Zahájit OTA s reálnou velikostí (pokud známe), jinak UPDATE_SIZE_UNKNOWN
+  const size_t beginSize = (contentLength > 0) ? (size_t)contentLength : (size_t)UPDATE_SIZE_UNKNOWN;
+  if (!Update.begin(beginSize)) {
+    logger.error("Update.begin failed: " + String(Update.getError()));
+    request->send(500, "application/json", "{\"error\":\"Update begin failed\"}");
+    http.end();
+    return;
+  }
+
+  // Okamžitá odpověď klientovi; vlastní flashování běží dál v rámci handleru
+  request->send(200, "application/json",
+                "{\"status\":\"update-started\",\"slot_size\":" + String(ota->size) +
+                ",\"content_length\":" + String(contentLength) + "}");
+
+  // === STREAM + YIELD smyčka ===
+  WiFiClient *stream = http.getStreamPtr();
+  static const size_t kBufSize = 2048;
+  uint8_t buf[kBufSize];
+
+  const int expected = contentLength;     // -1 pokud chunked
+  int remaining = expected;
+  size_t totalWritten = 0;
+  int lastPct = -1;
+
+  const uint32_t noDataTimeoutMs = 15000; // 15 s bez dat => konec
+  uint32_t lastDataMs = millis();
+
+  while (true) {
+    int avail = stream->available();
+
+    if (avail > 0) {
+      if (avail > (int)kBufSize) avail = (int)kBufSize;
+      int r = stream->readBytes((char*)buf, avail);
+      if (r <= 0) {
+        delay(1);
+        esp_task_wdt_reset();
+        continue;
+      }
+
+      // Ochrana proti přetečení slotu i u chunked
+      if ((totalWritten + (size_t)r) > ota->size) {
+        logger.error("Aborting: data exceed OTA slot size (" + String(ota->size) + ")");
+        break;
+      }
+
+      size_t w = Update.write(buf, r);
+      if (w != (size_t)r) {
+        logger.error("Short write to flash: wrote " + String(w) + " of " + String(r));
+        break;
+      }
+
+      totalWritten += w;
+      lastDataMs = millis();
+      if (remaining > 0) remaining -= r;
+
+      // Progres
+      if (expected > 0) {
+        int pct = (int)((totalWritten * 100ULL) / (size_t)expected);
+        if (pct != lastPct && (pct == 1 || pct % 5 == 0 || pct >= 99)) {
+          logger.info("OTA progress: " + String(pct) + "% (" + String(totalWritten) + " / " + String(expected) + " bytes)");
+          lastPct = pct;
+        }
+      } else {
+        // chunked – občasný log
+        if ((totalWritten % (128 * 1024)) < (size_t)r) {
+          logger.info("OTA written: " + String(totalWritten) + " bytes (chunked)");
+        }
+      }
+
+      // YIELD: dej CPU ostatním taskům a nakrm WDT
+      esp_task_wdt_reset();
+      delay(0);
+    } else {
+      // Nic k přečtení – krátký yield
+      delay(1);
+      esp_task_wdt_reset();
+    }
+
+    // Konec, pokud známe délku a vše zapsáno
+    if (expected > 0 && remaining <= 0) break;
+
+    // Konec, když server odpojil a nic už neteče
+    if (!http.connected() && stream->available() == 0) break;
+
+    // Timeout bez dat
+    if (millis() - lastDataMs > noDataTimeoutMs) {
+      logger.error("OTA timeout: no data for " + String(noDataTimeoutMs) + " ms");
+      break;
+    }
+  }
+
+  logger.info("OTA written: " + String(totalWritten) + " bytes");
+
+  if (!Update.end()) {
+    logger.error("Update.end error: " + String(Update.getError()));
+    http.end();
+    delay(500);
+    ESP.restart();  // restart pro čistý stav (FS se znovu namountuje v setupu)
+    return;
+  }
+  if (!Update.isFinished()) {
+    logger.error("Update not finished");
+    http.end();
+    delay(500);
+    ESP.restart();
+    return;
+  }
+
+  logger.info("OTA complete, rebooting...");
+  http.end();
+  delay(1000);
+  ESP.restart();
 }
