@@ -125,22 +125,25 @@ void HTMLGenerator::addHtmlFooter(String &html)
 {  
     html += "<footer>";
     html += "<p>expLORA Gateway Lite v" + String(FIRMWARE_VERSION) + " &copy; 2025</p>";
-    html += "<p><button id='btnUpdate' onclick='checkUpdate()' class='btn' style='font-size:11px;padding:5px 10px;'>Check Update</button></p>";
+    html += "<p><button id='btnUpdate' onclick='checkUpdate()' class='btn' style='font-size:11px;padding:5px 10px;'>Check for update</button></p>";
 
-    /* OTA banner (zobrazí se hned po startu update) */
+    /* OTA banner (displayed immediately after update starts) */
     html += "<div id='otaNotice' style='display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:9999;background:#222;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.25);'>";
     html += "  <span id='otaMsg'>Firmware update started. Please wait ~2 minutes. The device will reboot automatically.</span>";
     html += "</div>";
 
     html += "<script>";
     html += "(function(){";
-    html += "  function showNotice(msg){";
+    html += "  window.showNotice = function(msg){";
     html += "    var n=document.getElementById('otaNotice');";
     html += "    var m=document.getElementById('otaMsg');";
     html += "    if(m&&msg) m.textContent=msg;";
     html += "    if(n) n.style.display='block';";
-    html += "  }";
-    html += "  function hideNotice(){ var n=document.getElementById('otaNotice'); if(n) n.style.display='none'; }";
+    html += "  };";
+    html += "  window.hideNotice = function(){";
+    html += "    var n=document.getElementById('otaNotice');";
+    html += "    if(n) n.style.display='none';";
+    html += "  };";
 
     html += "  function parseJsonSafe(text){ try{ return JSON.parse(text); }catch(e){ return null; } }";
 
@@ -165,7 +168,8 @@ void HTMLGenerator::addHtmlFooter(String &html)
 
     html += "  window.updateFirmware = function(url){";
     html += "    var btn=document.getElementById('btnUpdate'); if(btn) btn.disabled=true;";
-    html += "    showNotice('Firmware update started. Please wait ~2 minutes. Do not power off.');";
+    html += "    window.showNotice('Firmware update started. Please wait ~2 minutes. Do not power off.');";
+    html += "    if (typeof startAutoRefresh==='function') { startAutoRefresh(120000); } else { setTimeout(function(){ location.reload(); },120000); }";
     html += "    fetch('/firmware/update',{";
     html += "      method:'POST',";
     html += "      headers:{'Content-Type':'application/x-www-form-urlencoded'},";
@@ -176,16 +180,18 @@ void HTMLGenerator::addHtmlFooter(String &html)
     html += "    })";
     html += "    .then(function(res){";
     html += "      if(!res.ok){ throw new Error((res.data && (res.data.error||res.data.message)) || ('HTTP '+res.status)); }";
-    html += "      if(res.data && res.data.message){ showNotice(res.data.message); }";
+    html += "      if(res.data && res.data.message){ window.showNotice(res.data.message); }";
     html += "    })";
     html += "    .catch(function(err){";
     html += "      console.error('Firmware update error:', err);";
-    html += "      showNotice('Update request sent. Device may already be updating. If nothing happens, retry. Error: '+err.message);";
+    html += "      window.showNotice('Update request sent. Device may already be updating. If nothing happens, retry. Error: '+err.message);";
     html += "    })";
     html += "    .finally(function(){ if(btn) btn.disabled=false; });";
     html += "  };";
+
     html += "})();";
     html += "</script>";
+        
     html += "</footer>";
 
 
@@ -289,11 +295,9 @@ void HTMLGenerator::addNavigation(String &html, const String &activePage)
     html += "<a href='/config' class='" + String(activePage == "Configuration" ? "active" : "") + "'>WiFi Setup</a>";
     html += "<a href='/sensors' class='" + String(activePage == "Sensors" ? "active" : "") + "'>Sensors</a>";
     html += "<a href='/mqtt' class='" + String(activePage == "MQTT" ? "active" : "") + "'>MQTT</a>";
+    html += "<a href='/firmware' class='" + String(activePage == "Firmware" ? "active" : "") + "'>Firmware</a>";
     html += "<a href='/logs' class='" + String(activePage == "Logs" ? "active" : "") + "'>Logs</a>";
     html += "<a href='/api' class='" + String(activePage == "API" ? "active" : "") + "'>API</a>";
-#if ENABLE_ELEGANT_OTA
-    html += "<a href='/update'>Update</a>";
-#endif
     html += "<a href='/reboot' onclick=\"return confirm('Are you sure you want to reboot the device?');\">Reboot</a>";
     html += "<a href='javascript:void(0);' class='icon' onclick='toggleMenu()'>&#9776;</a>";
     html += "</nav>";
@@ -617,7 +621,7 @@ String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &
         for (const auto &entry :  entries)
         {
             const auto &s = entry.data;
-            size_t idx = entry.index; // ← skutečný index
+            size_t idx = entry.index; // actual index
 
             html += "<tr>";
             html += "<td>" + s.name + "</td>";
@@ -637,6 +641,66 @@ String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &
 
     html += "<p><a class='btn' href='/sensors/add'>Add New Sensor</a></p>";
     html += "</div>";
+    addHtmlFooter(html);
+    return html;
+}
+
+String HTMLGenerator::generateFirmwarePage() {
+    String html;
+    addHtmlHeader(html, "Firmware");
+
+    // card: Online update
+    html += "<div class='card'>";
+    html += "<h2>Online Update</h2>";
+    html += "<p>Current firmware: <strong>v" + String(FIRMWARE_VERSION) + "</strong></p>";
+    html += "<p><button id='btnUpdate' onclick='checkUpdate()' class='btn'>Check for update</button></p>";
+    html += "<hr>";
+    html += "<label for='fwUrl'>Custom firmware URL:</label>";
+    html += "<input type='text' id='fwUrl' placeholder='https://example.com/firmware.bin'>";
+    html += "<button class='btn' onclick='(function(){var u=document.getElementById(\"fwUrl\").value.trim(); if(u){ updateFirmware(u); } else { alert(\"Enter firmware URL first\"); }})()'>Update from URL</button>";
+    html += "</div>";
+
+    // Card: Manual upload (.bin)
+    html += "<div class='card'>";
+    html += "<h2>Manual Upload (.bin)</h2>";
+    html += "<form id='uploadForm' enctype='multipart/form-data'>";
+    html += "  <input type='file' name='bin' id='fwFile' accept='.bin,application/octet-stream' required>";
+    html += "  <p><small>Do not power off the device during upload and install.</small></p>";
+    html += "  <button type='submit' id='btnUpload' class='btn'>Upload & Install</button>";
+    html += "</form>";
+    html += "</div>";
+
+    html += "<script>";
+    html += "(function(){";
+    html += "  function parseJsonSafe(t){ try{return JSON.parse(t);}catch(e){return null;} }";
+    html += "  var f=document.getElementById('uploadForm');";
+    html += "  var b=document.getElementById('btnUpload');";
+    html += "  if(f){";
+    html += "    f.addEventListener('submit', function(ev){";
+    html += "      ev.preventDefault();";
+    html += "      if(!document.getElementById('fwFile').files.length){ alert('Select .bin file first'); return; }";
+    html += "      if(b) b.disabled=true;";
+    html += "      if(window.showNotice){ window.showNotice('Uploading firmware… Please wait ~2 minutes. Do not power off.'); }";
+    html += "      if (typeof startAutoRefresh==='function') { startAutoRefresh(120000); } else { setTimeout(function(){ location.reload(); },120000); }";
+    html += "      var fd=new FormData(f);";
+    html += "      fetch('/firmware',{ method:'POST', body:fd })";
+    html += "        .then(function(resp){ return resp.text().then(function(t){ return {ok:resp.ok,status:resp.status,data:parseJsonSafe(t),raw:t}; }); })";
+    html += "        .then(function(res){";
+    html += "          if(!res.ok){ throw new Error((res.data&&(res.data.error||res.data.message))||('HTTP '+res.status)); }";
+    html += "          var msg=(res.data&&res.data.message)?res.data.message:'Firmware uploaded. Installing… device will reboot automatically.';";
+    html += "          if(window.showNotice){ window.showNotice(msg); } else { alert(msg); }";
+    html += "        })";
+    html += "        .catch(function(err){";
+    html += "          console.error('Upload error:',err);";
+    html += "          if(window.showNotice){ window.showNotice('Upload request sent. Device may already be updating. Error: '+err.message); }";
+    html += "          else { alert('Upload failed: '+err.message); }";
+    html += "        })";
+    html += "        .finally(function(){ if(b) b.disabled=false; });";
+    html += "    });";
+    html += "  }";
+    html += "})();";
+    html += "</script>";
+
     addHtmlFooter(html);
     return html;
 }

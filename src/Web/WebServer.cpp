@@ -83,10 +83,6 @@ bool WebPortal::init()
     server.begin();
     logger.info("Web server started on port " + String(HTTP_PORT));
 
-#if ENABLE_ELEGANT_OTA
-    otaServer = new OTAServer(logger, server);
-    otaServer->init();
-#endif
 
     // Create task on core 0 for DNS and other processing
     // xTaskCreatePinnedToCore(
@@ -197,6 +193,13 @@ void WebPortal::setupRoutes()
         server.on("/firmware/version", HTTP_GET, std::bind(&WebPortal::handleFirmwareVersion, this, std::placeholders::_1));
         server.on("/firmware/check", HTTP_GET, std::bind(&WebPortal::handleFirmwareCheck, this, std::placeholders::_1));
         server.on("/firmware/update", HTTP_POST, std::bind(&WebPortal::handleFirmwareUpdate, this, std::placeholders::_1));
+        server.on("/firmware", HTTP_GET, std::bind(&WebPortal::handleFirmwarePage, this, std::placeholders::_1));
+        server.on("/firmware", HTTP_POST,
+            [this](AsyncWebServerRequest *request) { this->handleFirmwareUploadComplete(request); },
+            [this](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+                this->handleFirmwareUploadChunk(request, filename, index, data, len, final);
+            }
+        );
 
         // Reboot
         server.on("/reboot", HTTP_GET, std::bind(&WebPortal::handleReboot, this, std::placeholders::_1));
@@ -216,9 +219,6 @@ void WebPortal::handleClient()
     // We keep this method for compatibility
 
     // This will handle auto-reboot after OTA process
-#if ENABLE_ELEGANT_OTA
-    otaServer->process();
-#endif
 }
 
 // Ensure proper cleanup in the destructor
@@ -1067,10 +1067,10 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
     return;
   }
 
-  // Content-Length může být -1 u chunked
+  // Content-Length can be -1 for chunked transfer
   const int contentLength = http.getSize();
 
-  // Cílový OTA slot + kontrola velikosti
+  // Target OTA slot + size check
   const esp_partition_t* ota = esp_ota_get_next_update_partition(nullptr);
   if (!ota) {
     request->send(500, "application/json", "{\"error\":\"No OTA partition\"}");
@@ -1084,10 +1084,10 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
     return;
   }
 
-  // Odmapovat FS, aby flash nebyla držena MMU
+  // Unmap filesystem so flash is not held by MMU
   LittleFS.end();
 
-  // Zahájit OTA s reálnou velikostí (pokud známe), jinak UPDATE_SIZE_UNKNOWN
+  // Start OTA with real size (if known), otherwise UPDATE_SIZE_UNKNOWN
   const size_t beginSize = (contentLength > 0) ? (size_t)contentLength : (size_t)UPDATE_SIZE_UNKNOWN;
   if (!Update.begin(beginSize)) {
     logger.error("Update.begin failed: " + String(Update.getError()));
@@ -1096,12 +1096,12 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
     return;
   }
 
-  // Okamžitá odpověď klientovi; vlastní flashování běží dál v rámci handleru
+  // Immediate response to client; actual flashing continues within the handler
   request->send(200, "application/json",
                 "{\"status\":\"update-started\",\"slot_size\":" + String(ota->size) +
                 ",\"content_length\":" + String(contentLength) + "}");
 
-  // === STREAM + YIELD smyčka ===
+  // === STREAM + YIELD loop ===
   WiFiClient *stream = http.getStreamPtr();
   static const size_t kBufSize = 2048;
   uint8_t buf[kBufSize];
@@ -1126,7 +1126,7 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
         continue;
       }
 
-      // Ochrana proti přetečení slotu i u chunked
+      // Protection against slot overflow even with chunked transfer
       if ((totalWritten + (size_t)r) > ota->size) {
         logger.error("Aborting: data exceed OTA slot size (" + String(ota->size) + ")");
         break;
@@ -1150,25 +1150,25 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
           lastPct = pct;
         }
       } else {
-        // chunked – občasný log
+        // chunked - occasional log
         if ((totalWritten % (128 * 1024)) < (size_t)r) {
           logger.info("OTA written: " + String(totalWritten) + " bytes (chunked)");
         }
       }
 
-      // YIELD: dej CPU ostatním taskům a nakrm WDT
+      // YIELD: give CPU to other tasks and feed WDT
       esp_task_wdt_reset();
       delay(0);
     } else {
-      // Nic k přečtení – krátký yield
+      // Nothing to read - short yield
       delay(1);
       esp_task_wdt_reset();
     }
 
-    // Konec, pokud známe délku a vše zapsáno
+    // End if we know length and everything is written
     if (expected > 0 && remaining <= 0) break;
 
-    // Konec, když server odpojil a nic už neteče
+    // End when server disconnected and nothing flows anymore
     if (!http.connected() && stream->available() == 0) break;
 
     // Timeout bez dat
@@ -1184,7 +1184,7 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
     logger.error("Update.end error: " + String(Update.getError()));
     http.end();
     delay(500);
-    ESP.restart();  // restart pro čistý stav (FS se znovu namountuje v setupu)
+    ESP.restart();  // restart for clean state (FS will remount in setup)
     return;
   }
   if (!Update.isFinished()) {
@@ -1199,4 +1199,147 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
   http.end();
   delay(1000);
   ESP.restart();
+}
+
+void WebPortal::handleFirmwarePage(AsyncWebServerRequest *request)
+{
+    logger.debug("HTTP request: GET /firmware");
+    String html = HTMLGenerator::generateFirmwarePage();
+    request->send(200, "text/html", html);
+}
+
+// POST /firmware - completion callback (sending response)
+void WebPortal::handleFirmwareUploadComplete(AsyncWebServerRequest *request)
+{
+    logger.debug("HTTP request: POST /firmware (complete)");
+
+    if (otaUploadHasError)
+    {
+        String msg = "{\"error\":\"" + otaUploadErrorMsg + "\"}";
+        request->send(500, "application/json", msg);
+        // reset state for next attempts
+        otaUploadHasError = false;
+        otaUploadErrorMsg = "";
+        otaUploadExpected = otaUploadWritten = 0;
+        return;
+    }
+
+    // Success
+    String msg = "{\"status\":\"update-started\",\"message\":\"Firmware uploaded. Installing… device will reboot automatically.\",\"bytes\":" + String(otaUploadWritten) + "}";
+    request->send(200, "application/json", msg);
+
+    // restart after short delay (so response gets sent)
+    delay(800);
+    ESP.restart();
+}
+
+// Upload chunk callback
+void WebPortal::handleFirmwareUploadChunk(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
+{
+    if (index == 0)
+    {
+        // Upload start (first chunk)
+        otaUploadHasError = false;
+        otaUploadErrorMsg = "";
+        otaUploadExpected = request->contentLength(); // HINT: may be inaccurate with multipart
+        otaUploadWritten = 0;
+
+        logger.info("Firmware upload started: " + filename + " size=" + String(otaUploadExpected));
+
+        // Target OTA slot
+        const esp_partition_t *ota = esp_ota_get_next_update_partition(nullptr);
+        if (!ota)
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "No OTA partition";
+            return;
+        }
+
+        // If server/client specified expected size, at least verify it fits in slot
+        if (otaUploadExpected > 0 && otaUploadExpected > ota->size)
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Firmware too large for OTA slot";
+            return;
+        }
+
+        // Unmap FS (for MMU)
+        LittleFS.end();
+
+        // IMPORTANT: use size UNKNOWN for multipart - otherwise risk "premature end"
+        if (!Update.begin((size_t)UPDATE_SIZE_UNKNOWN))
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Update.begin failed: " + String(Update.getError());
+            return;
+        }
+    }
+
+    if (otaUploadHasError)
+        return;
+
+    // Write chunk
+    if (len)
+    {
+        // Safety: never overwrite OTA slot size
+        const esp_partition_t *ota = esp_ota_get_next_update_partition(nullptr);
+        if (ota && (otaUploadWritten + len) > ota->size)
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Data exceed OTA slot size";
+            return;
+        }
+
+        size_t w = Update.write(data, len);
+        if (w != len)
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Short write: " + String(w) + "/" + String(len);
+            return;
+        }
+        otaUploadWritten += w;
+
+        // Progress log
+        if (otaUploadExpected > 0)
+        {
+            int pct = (int)((otaUploadWritten * 100ULL) / (size_t)otaUploadExpected);
+            if (pct == 1 || pct % 5 == 0 || pct >= 99)
+            {
+                logger.info("OTA progress: " + String(pct) + "% (" + String(otaUploadWritten) + " / " + String(otaUploadExpected) + " bytes)");
+            }
+        }
+        else if ((otaUploadWritten % (128 * 1024)) < len)
+        {
+            logger.info("OTA written: " + String(otaUploadWritten) + " bytes (chunked)");
+        }
+
+        // Yield + WDT
+        esp_task_wdt_reset();
+        delay(0);
+    }
+
+    if (final)
+    {
+        logger.info("Firmware upload finished: total " + String(otaUploadWritten) + " bytes");
+
+        if (otaUploadExpected > 0 && otaUploadWritten != otaUploadExpected)
+        {
+            logger.warning("Upload size hint mismatch: written=" + String(otaUploadWritten) + " expected=" + String(otaUploadExpected));
+        }
+
+        // IMPORTANT: finish multipart upload with evenIfRemaining=true
+        if (!Update.end(true))
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Update.end error: " + String(Update.getError());
+            return;
+        }
+        if (!Update.isFinished())
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Update not finished";
+            return;
+        }
+        // response will be sent by handleFirmwareUploadComplete()
+    }
 }

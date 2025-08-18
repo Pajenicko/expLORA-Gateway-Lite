@@ -29,7 +29,6 @@
 #include "../Data/Logging.h"
 #include "../Storage/ConfigManager.h"
 #include "../Protocol/MQTTManager.h"
-#include "OTAServer.h"
 
 /**
  * Class for web portal management
@@ -55,7 +54,6 @@ private:
     DNSServer dnsServer;          // DNS server for captive portal
     SensorManager &sensorManager; // Reference to sensor manager
     Logger &logger;               // Reference to logger
-    OTAServer *otaServer;         // OTA Server
 
     bool isAPMode; // AP mode (true) or client mode (false)
     String apName; // AP name in AP mode
@@ -65,6 +63,13 @@ private:
     String &wifiPassword;
     bool &configMode;
     String &timezone;
+
+
+    // Firmware upload state
+    bool otaUploadHasError = false;
+    String otaUploadErrorMsg = "";
+    size_t otaUploadExpected = 0;
+    size_t otaUploadWritten  = 0;
 
     // AP mode initialization
     void setupAP();
@@ -104,6 +109,12 @@ private:
     void handleFirmwareUpdate(AsyncWebServerRequest *request);
     void handleReboot(AsyncWebServerRequest *request);
     void handleNotFound(AsyncWebServerRequest *request);
+
+    // Firmware update handling
+    void handleFirmwarePage(AsyncWebServerRequest *request);
+    void handleFirmwareUploadComplete(AsyncWebServerRequest *request);
+    void handleFirmwareUploadChunk(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
+
 
     // Receive WebSocket messages
     void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,

@@ -186,19 +186,19 @@ bool LoRaProtocol::processBME280Packet(uint8_t *data, uint8_t len, int sensorInd
 
 // Process packet from DIY temperature sensor
 bool LoRaProtocol::processDIYTempPacket(uint8_t *data, uint8_t len, int sensorIndex, int rssi) {
-    // Kontrola minimální délky pro DS18B20 paket (hlavička + data + checksum)
+    // Check minimum length for DS18B20 packet (header + data + checksum)
     const SensorTypeInfo& typeInfo = getSensorTypeInfo(SensorType::DIY_TEMP);
     if (len < typeInfo.packetDataOffset + typeInfo.expectedDataLength + 1) {
         logger.warning("Packet too short for DS18B20");
         return false;
     }
     
-    // Extrakce společných údajů
+    // Extract common data
     uint32_t serialNumber = ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 8) | data[4];
     uint16_t batteryRaw = ((uint16_t)data[5] << 8) | data[6];
     float voltage = batteryRaw / 1000.0;
     
-    // Extrakce dat specifických pro DS18B20
+    // Extract DS18B20-specific data
     int16_t tempRaw = (int16_t)(((uint16_t)data[8] << 8) | data[9]);
     float temp = tempRaw / 100.0;
     
