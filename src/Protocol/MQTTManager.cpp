@@ -59,6 +59,7 @@ bool MQTTManager::init()
     else {
         mqttClient.setClient(wifiClient);
     }
+    mqttClientReady = true;
 
     mqttClient.setBufferSize(1024); // Increase to accommodate larger messages
 
@@ -75,6 +76,11 @@ bool MQTTManager::init()
 // Connect to MQTT broker
 bool MQTTManager::connect()
 {
+    if (!mqttClientReady) {
+        logger.error("MQTT client not initialized. Wait for init() first.");
+        return false;
+    }
+    
     logger.debug("Attempting to connect to MQTT broker...");
 
     bool connected = false;
@@ -116,7 +122,7 @@ bool MQTTManager::connect()
 void MQTTManager::process()
 {
     // Skip if MQTT is disabled in configuration
-    if (!configManager.mqttEnabled)
+    if (!configManager.mqttEnabled || !mqttClientReady)
     {
         return;
     }

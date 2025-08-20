@@ -317,6 +317,10 @@ bool ConfigManager::setMqttConfig(const String &host, int port, const String &us
     if (!isValidMqttTopic(rootPrefix) || !isValidMqttTopic(haPrefix))
     {
         logger.error("Invalid MQTT topic format");
+        logger.verbose("Root topic: " + rootPrefix);
+        logger.verbose("root check: " + String(isValidMqttTopic(rootPrefix)));
+        logger.verbose("HA topic: " + haPrefix);
+        logger.verbose("HA check: " + String(isValidMqttTopic(haPrefix)));
         return false;
     }
 
@@ -361,11 +365,11 @@ bool ConfigManager::isValidMqttTopic(const String &topic)
     // Check for invalid characters
     if (topic.indexOf('#') != -1 || topic.indexOf('+') != -1)
         return false;
-    
-    // Check for null character
-    if (topic.indexOf('\0') != -1)
+
+    // Check for leading or trailing slashes
+    if (topic[0] == '/' || topic[topic.length()-1] == '/') 
         return false;
-    
+
     return true;
 }
 
