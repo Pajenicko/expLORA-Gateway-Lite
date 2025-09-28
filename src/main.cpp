@@ -317,6 +317,33 @@ void loop()
 {
     esp_task_wdt_reset();
 
+    // Detect WiFi status transitions and adapt web server routes
+    static wl_status_t lastWifiStatus = WiFi.status();
+    wl_status_t currentWifiStatus = WiFi.status();
+    if (lastWifiStatus != currentWifiStatus)
+    {
+        // On transition to connected, update portal mode (routes are always registered)
+        if (currentWifiStatus == WL_CONNECTED)
+        {
+            logger.info("WiFi connected (transition). Reinitializing web portal routes.");
+            if (webPortal)
+            {
+                webPortal->setAPMode(false);
+            }
+        }
+        // On transition away from connected, switch portal to AP mode so handlers reflect captive state
+        else if (lastWifiStatus == WL_CONNECTED && currentWifiStatus != WL_CONNECTED)
+        {
+            logger.warning("WiFi disconnected (transition). Switching web portal to AP mode.");
+            if (webPortal)
+            {
+                webPortal->setAPMode(true);
+                // No immediate restart to avoid flapping; routes will still serve config via handlers
+            }
+        }
+        lastWifiStatus = currentWifiStatus;
+    }
+
     // Check timer for temporary AP mode
     if (temporaryAPMode && !configManager->configMode && configManager->wifiSSID.length() > 0)
     {

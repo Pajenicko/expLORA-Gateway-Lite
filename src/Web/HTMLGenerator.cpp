@@ -95,7 +95,7 @@ void HTMLGenerator::deinit()
 }
 
 // Adding HTML header code
-void HTMLGenerator::addHtmlHeader(String &html, const String &title, bool isAPMode = false)
+void HTMLGenerator::addHtmlHeader(String &html, const String &title, bool isAPMode)
 {
     html += "<!DOCTYPE html><html><head>";
     html += "<meta charset='UTF-8'>";
@@ -108,24 +108,31 @@ void HTMLGenerator::addHtmlHeader(String &html, const String &title, bool isAPMo
     html += "</head><body>";
     html += "<header><h1>expLORA Gateway Lite</h1><h2>" + title + "</h2></header>";
 
-    // Add navigation only if not in AP mode
+    // Navigation: full in STA, minimal in AP (Config + Reboot)
     if (!isAPMode)
     {
         addNavigation(html, title);
     }
     else
     {
-        // In AP mode, just add the container div without navigation
+        html += "<nav>";
+        html += "<a href='/config' class='" + String(title == "Configuration" ? "active" : "") + "'>WiFi Setup</a>";
+        html += "<a href='/reboot' onclick=\"return confirm('Are you sure you want to reboot the device?');\">Reboot</a>";
+        html += "<a href='javascript:void(0);' class='icon' onclick='toggleMenu()'>&#9776;</a>";
+        html += "</nav>";
         html += "<div class='container'>";
     }
 }
 
 // Adding HTML footer code
-void HTMLGenerator::addHtmlFooter(String &html)
-{  
+void HTMLGenerator::addHtmlFooter(String &html, bool isAPMode)
+{
     html += "<footer>";
     html += "<p>expLORA Gateway Lite v" + String(FIRMWARE_VERSION) + " &copy; 2025</p>";
-    html += "<p><button id='btnUpdate' onclick='checkUpdate()' class='btn' style='font-size:11px;padding:5px 10px;'>Check for update</button></p>";
+    if (!isAPMode)
+    {
+        html += "<p><button id='btnUpdate' onclick='checkUpdate()' class='btn' style='font-size:11px;padding:5px 10px;'>Check for update</button></p>";
+    }
 
     /* OTA banner (displayed immediately after update starts) */
     html += "<div id='otaNotice' style='display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:9999;background:#222;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.25);'>";
@@ -311,7 +318,7 @@ String HTMLGenerator::generateHomePage(const std::vector<SensorData> &sensors)
     String html;
 
     // Add header with reduced content
-    addHtmlHeader(html, "Home");
+    addHtmlHeader(html, "Home", WiFi.status() != WL_CONNECTED);
 
     // Status card
     html += "<div class='card'>";
@@ -402,8 +409,8 @@ String HTMLGenerator::generateHomePage(const std::vector<SensorData> &sensors)
     // Auto-refresh with longer interval in AP mode
     html += "<script>startAutoRefresh(60000);</script>"; // 60 seconds instead of 30
 
-    // Add footer
-    addHtmlFooter(html);
+    // Add footer (hide update button in AP mode)
+    addHtmlFooter(html, WiFi.status() != WL_CONNECTED);
 
     return html;
 }

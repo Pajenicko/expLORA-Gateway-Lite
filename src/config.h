@@ -22,7 +22,7 @@
 #pragma once
 
 // Firmware version
-#define FIRMWARE_VERSION "1.1.1"
+#define FIRMWARE_VERSION "1.1.2"
 
 // OTA Configuration
 #define FIRMWARE_UPDATE_URL "https://pajenicko.cz/webflash/explora-gw-lite-autoupdate.json"

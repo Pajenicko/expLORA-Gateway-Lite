@@ -407,8 +407,10 @@ bool SensorManager::forwardSensorData(int index)
     }
 
     // Create a WiFi client for HTTP request
-    WiFiClient client;
     HTTPClient http;
+    http.setTimeout(3000); // keep operations short to avoid WDT/starvation
+    WiFiClient plainClient;
+    WiFiClientSecure *secureClientPtr = nullptr; // allocated only for HTTPS and deleted after use
 
     // Format the custom URL by replacing placeholders
     String url = sensors[index].customUrl;
@@ -471,16 +473,16 @@ bool SensorManager::forwardSensorData(int index)
 
     logger.debug("Forwarding data for sensor " + sensors[index].name + " to URL: " + url);
 
-    // For HTTPS, use a secure client but with insecure flag
+    // For HTTPS, use a secure client, but ensure we delete it after the request
     if (isHttps)
     {
-        WiFiClientSecure *secureClient = new WiFiClientSecure();
-        secureClient->setInsecure(); // Skip certificate validation
-        http.begin(*secureClient, url);
+        secureClientPtr = new WiFiClientSecure();
+        secureClientPtr->setInsecure(); // Skip certificate validation (no CA bundle)
+        http.begin(*secureClientPtr, url);
     }
     else
     {
-        http.begin(client, url);
+        http.begin(plainClient, url);
     }
 
     // Send the request
@@ -502,6 +504,11 @@ bool SensorManager::forwardSensorData(int index)
     }
 
     http.end();
+    if (secureClientPtr)
+    {
+        delete secureClientPtr;
+        secureClientPtr = nullptr;
+    }
 
     return (httpCode == HTTP_CODE_OK);
 }

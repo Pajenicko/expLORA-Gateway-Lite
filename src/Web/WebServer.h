@@ -57,6 +57,8 @@ private:
 
     bool isAPMode; // AP mode (true) or client mode (false)
     String apName; // AP name in AP mode
+    bool routesRegistered = false; // Ensure routes are registered only once
+    bool serverStarted = false;    // Track server begin/end state
 
     // Device configuration - reference to external configuration
     String &wifiSSID;
@@ -78,6 +80,8 @@ private:
 
     // Setup routes for web server
     void setupRoutes();
+    // Guard handlers: if AP mode, redirect to /config and return true
+    bool guardAPOnly(AsyncWebServerRequest *request);
 
     // Create content for individual pages
     String createHomePage();

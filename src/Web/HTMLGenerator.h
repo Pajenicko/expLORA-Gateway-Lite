@@ -47,10 +47,10 @@ private:
     static void freeBuffer();
 
     // Add HTML opening code
-    static void addHtmlHeader(String &html, const String &title, bool isAPMode);
+    static void addHtmlHeader(String &html, const String &title, bool isAPMode = false);
 
     // Add HTML closing code
-    static void addHtmlFooter(String &html);
+    static void addHtmlFooter(String &html, bool isAPMode = false);
 
     // Add CSS for pages
     static void addStyles(String &html);

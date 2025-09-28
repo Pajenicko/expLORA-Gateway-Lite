@@ -76,12 +76,16 @@ bool WebPortal::init()
         setupAP();
     }
 
-    // Setup routes
+    // Setup routes (idempotent)
     setupRoutes();
 
-    // Start server
-    server.begin();
-    logger.info("Web server started on port " + String(HTTP_PORT));
+    // Start server once
+    if (!serverStarted)
+    {
+        server.begin();
+        serverStarted = true;
+        logger.info("Web server started on port " + String(HTTP_PORT));
+    }
 
 
     // Create task on core 0 for DNS and other processing
@@ -145,71 +149,57 @@ void WebPortal::setupAP()
 // Modify WebPortal::setupRoutes() in WebServer.cpp
 void WebPortal::setupRoutes()
 {
-    logger.info("Setting up web server routes");
-
-    // In AP mode, we only want to show WiFi configuration
-    if (isAPMode)
+    if (routesRegistered)
     {
-        // Basic pages for AP mode only
-        server.on("/", HTTP_GET, std::bind(&WebPortal::handleConfig, this, std::placeholders::_1));
-        logger.debug("Route registered: GET / (redirects to config in AP mode)");
-
-        server.on("/config", HTTP_GET, std::bind(&WebPortal::handleConfig, this, std::placeholders::_1));
-        logger.debug("Route registered: GET /config");
-
-        server.on("/config", HTTP_POST, std::bind(&WebPortal::handleConfigPost, this, std::placeholders::_1));
-        logger.debug("Route registered: POST /config");
-    }
-    else
-    {
-        // Full set of routes for client mode
-        server.on("/", HTTP_GET, std::bind(&WebPortal::handleRoot, this, std::placeholders::_1));
-        logger.debug("Route registered: GET /");
-
-        server.on("/config", HTTP_GET, std::bind(&WebPortal::handleConfig, this, std::placeholders::_1));
-        server.on("/config", HTTP_POST, std::bind(&WebPortal::handleConfigPost, this, std::placeholders::_1));
-
-        // Sensor management
-        server.on("/sensors/add", HTTP_GET, std::bind(&WebPortal::handleSensorAdd, this, std::placeholders::_1));
-        server.on("/sensors/add", HTTP_POST, std::bind(&WebPortal::handleSensorAddPost, this, std::placeholders::_1));
-        server.on("/sensors/edit", HTTP_GET, std::bind(&WebPortal::handleSensorEdit, this, std::placeholders::_1));
-        server.on("/sensors/update", HTTP_POST, std::bind(&WebPortal::handleSensorEditPost, this, std::placeholders::_1));
-        server.on("/sensors/delete", HTTP_GET, std::bind(&WebPortal::handleSensorDelete, this, std::placeholders::_1));
-        server.on("/sensors", HTTP_GET, std::bind(&WebPortal::handleSensors, this, std::placeholders::_1));
-
-        // Logs
-        server.on("/logs/clear", HTTP_GET, std::bind(&WebPortal::handleLogsClear, this, std::placeholders::_1));
-        server.on("/logs/level", HTTP_POST, std::bind(&WebPortal::handleLogLevel, this, std::placeholders::_1));
-        server.on("/logs", HTTP_GET, std::bind(&WebPortal::handleLogs, this, std::placeholders::_1));
-
-        // MQTT
-        server.on("/mqtt", HTTP_GET, std::bind(&WebPortal::handleMqtt, this, std::placeholders::_1));
-        server.on("/mqtt", HTTP_POST, std::bind(&WebPortal::handleMqttPost, this, std::placeholders::_1));
-
-        // API
-        server.on("/api", HTTP_GET, std::bind(&WebPortal::handleAPI, this, std::placeholders::_1));
-
-        // Firmware update endpoints
-        server.on("/firmware/version", HTTP_GET, std::bind(&WebPortal::handleFirmwareVersion, this, std::placeholders::_1));
-        server.on("/firmware/check", HTTP_GET, std::bind(&WebPortal::handleFirmwareCheck, this, std::placeholders::_1));
-        server.on("/firmware/update", HTTP_POST, std::bind(&WebPortal::handleFirmwareUpdate, this, std::placeholders::_1));
-        server.on("/firmware", HTTP_GET, std::bind(&WebPortal::handleFirmwarePage, this, std::placeholders::_1));
-        server.on("/firmware", HTTP_POST,
-            [this](AsyncWebServerRequest *request) { this->handleFirmwareUploadComplete(request); },
-            [this](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
-                this->handleFirmwareUploadChunk(request, filename, index, data, len, final);
-            }
-        );
-
-        // Reboot
-        server.on("/reboot", HTTP_GET, std::bind(&WebPortal::handleReboot, this, std::placeholders::_1));
+        return;
     }
 
-    // Unknown pages (404) - needed in both modes
+    logger.info("Registering web server routes (once)");
+
+    server.on("/", HTTP_GET, std::bind(&WebPortal::handleRoot, this, std::placeholders::_1));
+    server.on("/config", HTTP_GET, std::bind(&WebPortal::handleConfig, this, std::placeholders::_1));
+    server.on("/config", HTTP_POST, std::bind(&WebPortal::handleConfigPost, this, std::placeholders::_1));
+
+    // Sensor management
+    server.on("/sensors/add", HTTP_GET, std::bind(&WebPortal::handleSensorAdd, this, std::placeholders::_1));
+    server.on("/sensors/add", HTTP_POST, std::bind(&WebPortal::handleSensorAddPost, this, std::placeholders::_1));
+    server.on("/sensors/edit", HTTP_GET, std::bind(&WebPortal::handleSensorEdit, this, std::placeholders::_1));
+    server.on("/sensors/update", HTTP_POST, std::bind(&WebPortal::handleSensorEditPost, this, std::placeholders::_1));
+    server.on("/sensors/delete", HTTP_GET, std::bind(&WebPortal::handleSensorDelete, this, std::placeholders::_1));
+    server.on("/sensors", HTTP_GET, std::bind(&WebPortal::handleSensors, this, std::placeholders::_1));
+
+    // Logs
+    server.on("/logs/clear", HTTP_GET, std::bind(&WebPortal::handleLogsClear, this, std::placeholders::_1));
+    server.on("/logs/level", HTTP_POST, std::bind(&WebPortal::handleLogLevel, this, std::placeholders::_1));
+    server.on("/logs", HTTP_GET, std::bind(&WebPortal::handleLogs, this, std::placeholders::_1));
+
+    // MQTT
+    server.on("/mqtt", HTTP_GET, std::bind(&WebPortal::handleMqtt, this, std::placeholders::_1));
+    server.on("/mqtt", HTTP_POST, std::bind(&WebPortal::handleMqttPost, this, std::placeholders::_1));
+
+    // API
+    server.on("/api", HTTP_GET, std::bind(&WebPortal::handleAPI, this, std::placeholders::_1));
+
+    // Firmware update endpoints
+    server.on("/firmware/version", HTTP_GET, std::bind(&WebPortal::handleFirmwareVersion, this, std::placeholders::_1));
+    server.on("/firmware/check", HTTP_GET, std::bind(&WebPortal::handleFirmwareCheck, this, std::placeholders::_1));
+    server.on("/firmware/update", HTTP_POST, std::bind(&WebPortal::handleFirmwareUpdate, this, std::placeholders::_1));
+    server.on("/firmware", HTTP_GET, std::bind(&WebPortal::handleFirmwarePage, this, std::placeholders::_1));
+    server.on("/firmware", HTTP_POST,
+        [this](AsyncWebServerRequest *request) { this->handleFirmwareUploadComplete(request); },
+        [this](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+            this->handleFirmwareUploadChunk(request, filename, index, data, len, final);
+        }
+    );
+
+    // Reboot
+    server.on("/reboot", HTTP_GET, std::bind(&WebPortal::handleReboot, this, std::placeholders::_1));
+
+    // Unknown pages (404)
     server.onNotFound(std::bind(&WebPortal::handleNotFound, this, std::placeholders::_1));
-    logger.debug("Route registered: 404 handler");
 
-    logger.info("All routes registered successfully");
+    routesRegistered = true;
+    logger.info("Routes registered");
 }
 
 // Modify the handleClient method to avoid duplicate processing
@@ -271,6 +261,7 @@ bool WebPortal::isInAPMode() const
 void WebPortal::restart()
 {
     server.end();
+    serverStarted = false;
 
     // Reset DNS server if it was running
     if (isAPMode)
@@ -306,6 +297,17 @@ void WebPortal::handleRoot(AsyncWebServerRequest *request)
     request->send(200, "text/html", html);
 }
 
+// Guard: if AP mode, redirect to /config
+bool WebPortal::guardAPOnly(AsyncWebServerRequest *request)
+{
+    if (isAPMode)
+    {
+        request->redirect("/config");
+        return true;
+    }
+    return false;
+}
+
 // WiFi configuration page
 void WebPortal::handleConfig(AsyncWebServerRequest *request)
 {
@@ -313,8 +315,8 @@ void WebPortal::handleConfig(AsyncWebServerRequest *request)
 
     String currentIP = isAPMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
 
-    // Generate HTML
-    String html = HTMLGenerator::generateConfigPage(wifiSSID, wifiPassword, configMode, currentIP, timezone);
+    // Generate HTML (use isAPMode to drive UI state)
+    String html = HTMLGenerator::generateConfigPage(wifiSSID, wifiPassword, isAPMode, currentIP, timezone);
 
     // Send response
     request->send(200, "text/html", html);
@@ -387,6 +389,7 @@ void WebPortal::handleConfigPost(AsyncWebServerRequest *request)
 void WebPortal::handleSensors(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /sensors");
+    if (guardAPOnly(request)) return;
 
     // Get list of sensors
     std::vector<ActiveSensorEntry> sensorsList = sensorManager.getActiveSensorEntries();
@@ -402,6 +405,7 @@ void WebPortal::handleSensors(AsyncWebServerRequest *request)
 void WebPortal::handleSensorAdd(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /sensors/add");
+    if (guardAPOnly(request)) return;
 
     // Generate HTML
     String html = HTMLGenerator::generateSensorAddPage();
@@ -414,6 +418,7 @@ void WebPortal::handleSensorAdd(AsyncWebServerRequest *request)
 void WebPortal::handleSensorAddPost(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /sensors/add");
+    if (guardAPOnly(request)) return;
 
     // Check parameters
     if (request->hasParam("name", true) &&
@@ -540,6 +545,7 @@ void WebPortal::handleSensorAddPost(AsyncWebServerRequest *request)
 void WebPortal::handleSensorEdit(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /sensors/edit");
+    if (guardAPOnly(request)) return;
 
     // Check index parameter
     if (request->hasParam("index"))
@@ -568,6 +574,7 @@ void WebPortal::handleSensorEdit(AsyncWebServerRequest *request)
 void WebPortal::handleSensorEditPost(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /sensors/update");
+    if (guardAPOnly(request)) return;
 
     // Check parameters
     if (request->hasParam("index", true) &&
@@ -679,6 +686,7 @@ void WebPortal::handleSensorEditPost(AsyncWebServerRequest *request)
 void WebPortal::handleSensorDelete(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /sensors/delete");
+    if (guardAPOnly(request)) return;
 
     // Check index parameter
     if (request->hasParam("index"))
@@ -726,6 +734,7 @@ void WebPortal::handleSensorDelete(AsyncWebServerRequest *request)
 void WebPortal::handleLogs(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /logs");
+    if (guardAPOnly(request)) return;
 
     // Get logs
     size_t logCount = 0;
@@ -742,6 +751,7 @@ void WebPortal::handleLogs(AsyncWebServerRequest *request)
 void WebPortal::handleLogsClear(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /logs/clear");
+    if (guardAPOnly(request)) return;
 
     // Clear logs
     logger.clearLogs();
@@ -757,6 +767,7 @@ void WebPortal::handleLogsClear(AsyncWebServerRequest *request)
 void WebPortal::handleLogLevel(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /logs/level");
+    if (guardAPOnly(request)) return;
 
     // Check level parameter
     if (request->hasParam("level", true))
@@ -776,6 +787,7 @@ void WebPortal::handleLogLevel(AsyncWebServerRequest *request)
 void WebPortal::handleMqtt(AsyncWebServerRequest *request)
 {
     // logger.debug("HTTP request: GET /mqtt");
+    if (guardAPOnly(request)) return;
 
     // Get MQTT configuration from ConfigManager
     // ConfigManager* configManager = (ConfigManager*)request->getParam("configManager")->value().toInt();
@@ -802,6 +814,7 @@ void WebPortal::handleMqtt(AsyncWebServerRequest *request)
 void WebPortal::handleMqttPost(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /mqtt");
+    if (guardAPOnly(request)) return;
 
     // Check parameters
     if (request->hasParam("host", true) &&
@@ -853,6 +866,7 @@ void WebPortal::handleMqttPost(AsyncWebServerRequest *request)
 void WebPortal::handleAPI(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /api");
+    if (guardAPOnly(request)) return;
 
     // Check format parameter
     String format = request->hasParam("format") ? request->getParam("format")->value() : "html";
@@ -1010,6 +1024,7 @@ void WebPortal::handleNotFound(AsyncWebServerRequest *request)
 void WebPortal::handleFirmwareVersion(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /firmware/version");
+    if (guardAPOnly(request)) return;
     
     String json = "{\"version\":\"" + String(FIRMWARE_VERSION) + "\"}";
     request->send(200, "application/json", json);
@@ -1019,9 +1034,11 @@ void WebPortal::handleFirmwareVersion(AsyncWebServerRequest *request)
 void WebPortal::handleFirmwareCheck(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /firmware/check");
+    if (guardAPOnly(request)) return;
     
     // Create HTTP client to check remote version
     HTTPClient http;
+    http.setTimeout(5000);
     http.begin(FIRMWARE_UPDATE_URL);
     http.addHeader("User-Agent", "expLORA-Gateway/" + String(FIRMWARE_VERSION));
     
@@ -1043,6 +1060,7 @@ void WebPortal::handleFirmwareCheck(AsyncWebServerRequest *request)
 // Handle firmware update request
 void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
   logger.debug("HTTP request: POST /firmware/update");
+  if (guardAPOnly(request)) return;
 
   if (!request->hasParam("url", true)) {
     request->send(400, "application/json", "{\"error\":\"Missing firmware URL\"}");
@@ -1053,6 +1071,7 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
   logger.info("Starting firmware update from: " + firmwareUrl);
 
   HTTPClient http;
+  http.setTimeout(10000);
   if (!http.begin(firmwareUrl)) {
     request->send(500, "application/json", "{\"error\":\"HTTP begin failed\"}");
     return;
@@ -1204,6 +1223,7 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
 void WebPortal::handleFirmwarePage(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /firmware");
+    if (guardAPOnly(request)) return;
     String html = HTMLGenerator::generateFirmwarePage();
     request->send(200, "text/html", html);
 }
@@ -1212,6 +1232,7 @@ void WebPortal::handleFirmwarePage(AsyncWebServerRequest *request)
 void WebPortal::handleFirmwareUploadComplete(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /firmware (complete)");
+    if (guardAPOnly(request)) return;
 
     if (otaUploadHasError)
     {
@@ -1236,6 +1257,7 @@ void WebPortal::handleFirmwareUploadComplete(AsyncWebServerRequest *request)
 // Upload chunk callback
 void WebPortal::handleFirmwareUploadChunk(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
 {
+    if (guardAPOnly(request)) return;
     if (index == 0)
     {
         // Upload start (first chunk)
