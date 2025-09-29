@@ -212,70 +212,115 @@ bool SensorManager::updateSensorData(int index, float temperature, float humidit
     rainAmount *= sensors[index].rainAmountCorrection;
     rainRate *= sensors[index].rainRateCorrection;
 
-    // Log if corrections were applied
-    bool correctionsApplied = false;
-    String correctionLog = "Corrections applied to " + sensors[index].name + ": ";
-
-    if (sensors[index].hasTemperature() && sensors[index].temperatureCorrection != 0)
+    // Log if corrections were applied (only build string if debug enabled)
+    if (logger.getLogLevel() >= LogLevel::DEBUG)
     {
-        correctionLog += "Temp " + String(originalTemp, 2) + "→" + String(temperature, 2) + "°C, ";
-        correctionsApplied = true;
-    }
+        bool correctionsApplied = false;
+        String correctionLog;
+        correctionLog.reserve(128);
+        correctionLog += "Corrections applied to ";
+        correctionLog += sensors[index].name;
+        correctionLog += ": ";
 
-    if (sensors[index].hasHumidity() && sensors[index].humidityCorrection != 0)
-    {
-        correctionLog += "Hum " + String(originalHum, 2) + "→" + String(humidity, 2) + "%, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasTemperature() && sensors[index].temperatureCorrection != 0)
+        {
+            correctionLog += "Temp ";
+            correctionLog += String(originalTemp, 2);
+            correctionLog += "→";
+            correctionLog += String(temperature, 2);
+            correctionLog += "°C, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasPressure() && sensors[index].pressureCorrection != 0)
-    {
-        correctionLog += "Press " + String(originalPress, 2) + "→" + String(pressure, 2) + "hPa, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasHumidity() && sensors[index].humidityCorrection != 0)
+        {
+            correctionLog += "Hum ";
+            correctionLog += String(originalHum, 2);
+            correctionLog += "→";
+            correctionLog += String(humidity, 2);
+            correctionLog += "%, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasPPM() && sensors[index].ppmCorrection != 0)
-    {
-        correctionLog += "CO2 " + String(originalPPM, 0) + "→" + String(ppm, 0) + "ppm, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasPressure() && sensors[index].pressureCorrection != 0)
+        {
+            correctionLog += "Press ";
+            correctionLog += String(originalPress, 2);
+            correctionLog += "→";
+            correctionLog += String(pressure, 2);
+            correctionLog += "hPa, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasLux() && sensors[index].luxCorrection != 0)
-    {
-        correctionLog += "Lux " + String(originalLux, 1) + "→" + String(lux, 1) + "lx, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasPPM() && sensors[index].ppmCorrection != 0)
+        {
+            correctionLog += "CO2 ";
+            correctionLog += String(originalPPM, 0);
+            correctionLog += "→";
+            correctionLog += String(ppm, 0);
+            correctionLog += "ppm, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasWindSpeed() && sensors[index].windSpeedCorrection != 1.0f)
-    {
-        correctionLog += "Wind " + String(originalWindSpeed, 1) + "→" + String(windSpeed, 1) + "m/s, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasLux() && sensors[index].luxCorrection != 0)
+        {
+            correctionLog += "Lux ";
+            correctionLog += String(originalLux, 1);
+            correctionLog += "→";
+            correctionLog += String(lux, 1);
+            correctionLog += "lx, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasWindDirection() && sensors[index].windDirectionCorrection != 0)
-    {
-        correctionLog += "Dir " + String(originalWindDir) + "→" + String(windDirection) + "°, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasWindSpeed() && sensors[index].windSpeedCorrection != 1.0f)
+        {
+            correctionLog += "Wind ";
+            correctionLog += String(originalWindSpeed, 1);
+            correctionLog += "→";
+            correctionLog += String(windSpeed, 1);
+            correctionLog += "m/s, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasRainAmount() && sensors[index].rainAmountCorrection != 1.0f)
-    {
-        correctionLog += "Rain " + String(originalRainAmount, 1) + "→" + String(rainAmount, 1) + "mm, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasWindDirection() && sensors[index].windDirectionCorrection != 0)
+        {
+            correctionLog += "Dir ";
+            correctionLog += String(originalWindDir);
+            correctionLog += "→";
+            correctionLog += String(windDirection);
+            correctionLog += "°, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasRainRate() && sensors[index].rainRateCorrection != 1.0f)
-    {
-        correctionLog += "Rate " + String(originalRainRate, 1) + "→" + String(rainRate, 1) + "mm/h, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasRainAmount() && sensors[index].rainAmountCorrection != 1.0f)
+        {
+            correctionLog += "Rain ";
+            correctionLog += String(originalRainAmount, 1);
+            correctionLog += "→";
+            correctionLog += String(rainAmount, 1);
+            correctionLog += "mm, ";
+            correctionsApplied = true;
+        }
 
-    // Log corrections if any were applied
-    if (correctionsApplied)
-    {
-        // Remove trailing comma and space
-        correctionLog = correctionLog.substring(0, correctionLog.length() - 2);
-        logger.debug(correctionLog);
+        if (sensors[index].hasRainRate() && sensors[index].rainRateCorrection != 1.0f)
+        {
+            correctionLog += "Rate ";
+            correctionLog += String(originalRainRate, 1);
+            correctionLog += "→";
+            correctionLog += String(rainRate, 1);
+            correctionLog += "mm/h, ";
+            correctionsApplied = true;
+        }
+
+        if (correctionsApplied)
+        {
+            // Remove trailing ", " if present
+            if (correctionLog.endsWith(", "))
+            {
+                correctionLog.remove(correctionLog.length() - 2);
+            }
+            logger.debug(correctionLog);
+        }
     }
 
     // Adjust pressure for altitude
@@ -411,6 +456,7 @@ bool SensorManager::forwardSensorData(int index)
     http.setTimeout(3000); // keep operations short to avoid WDT/starvation
     WiFiClient plainClient;
     WiFiClientSecure *secureClientPtr = nullptr; // allocated only for HTTPS and deleted after use
+    http.setReuse(false);
 
     // Format the custom URL by replacing placeholders
     String url = sensors[index].customUrl;

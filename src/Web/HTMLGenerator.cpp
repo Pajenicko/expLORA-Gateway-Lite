@@ -316,6 +316,7 @@ void HTMLGenerator::addNavigation(String &html, const String &activePage)
 String HTMLGenerator::generateHomePage(const std::vector<SensorData> &sensors)
 {
     String html;
+    html.reserve(4096);
 
     // Add header with reduced content
     addHtmlHeader(html, "Home", WiFi.status() != WL_CONNECTED);
@@ -460,6 +461,7 @@ void HTMLGenerator::generateSensorTable(char *buffer, size_t &maxLen, const std:
 String HTMLGenerator::generateConfigPage(const String &ssid, const String &password, bool configMode, const String &ip, const String &timezone)
 {
     String html;
+    html.reserve(4096);
 
     // Add header - pass configMode to suppress navigation in AP mode
     addHtmlHeader(html, "Configuration", configMode);
@@ -535,6 +537,7 @@ String HTMLGenerator::generateMqttPage(const String &host, int port, const Strin
                                        const String &prefix, bool haEnabled, String &haPrefix)
 {
     String html;
+    html.reserve(4096);
 
     // Add header
     addHtmlHeader(html, "MQTT Configuration");
@@ -611,6 +614,7 @@ String HTMLGenerator::generateMqttPage(const String &host, int port, const Strin
 String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &entries)
 {
     String html;
+    html.reserve(8192);
     addHtmlHeader(html, "Sensors");
 
     html += "<div class='card'><h2>Configured Sensors</h2>";
@@ -654,6 +658,7 @@ String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &
 
 String HTMLGenerator::generateFirmwarePage() {
     String html;
+    html.reserve(4096);
     addHtmlHeader(html, "Firmware");
 
     // card: Online update
@@ -716,6 +721,7 @@ String HTMLGenerator::generateFirmwarePage() {
 String HTMLGenerator::generateSensorAddPage()
 {
     String html;
+    html.reserve(4096);
 
     // Adding header
     addHtmlHeader(html, "Add Sensor");
@@ -986,6 +992,7 @@ String HTMLGenerator::generateSensorAddPage()
 String HTMLGenerator::generateSensorEditPage(const SensorData &sensor, int index)
 {
     String html;
+    html.reserve(8192);
 
     // Adding header
     addHtmlHeader(html, "Edit Sensor");
@@ -1296,6 +1303,7 @@ String HTMLGenerator::generateSensorEditPage(const SensorData &sensor, int index
 String HTMLGenerator::generateLogsPage(const LogEntry *logs, size_t logCount, LogLevel currentLevel)
 {
     String html;
+    html.reserve(8192);
 
     // Adding header
     addHtmlHeader(html, "Logs");
@@ -1497,6 +1505,7 @@ String HTMLGenerator::generateAPIJson(const std::vector<SensorData> &sensors)
 String HTMLGenerator::generateAPIPage(const std::vector<SensorData> &sensors)
 {
     String html;
+    html.reserve(4096);
 
     // Adding header
     addHtmlHeader(html, "API");

@@ -26,6 +26,7 @@
 #include <ArduinoJson.h>
 #include <esp_ota_ops.h>
 #include <esp_task_wdt.h>
+#include <esp_heap_caps.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -179,6 +180,9 @@ void WebPortal::setupRoutes()
 
     // API
     server.on("/api", HTTP_GET, std::bind(&WebPortal::handleAPI, this, std::placeholders::_1));
+
+    // Diagnostics
+    server.on("/diag/heap", HTTP_GET, std::bind(&WebPortal::handleDiagHeap, this, std::placeholders::_1));
 
     // Firmware update endpoints
     server.on("/firmware/version", HTTP_GET, std::bind(&WebPortal::handleFirmwareVersion, this, std::placeholders::_1));
@@ -1020,6 +1024,46 @@ void WebPortal::handleNotFound(AsyncWebServerRequest *request)
     }
 }
 
+// Diagnostics endpoint: heap and system info (visible only on DEBUG/VERBOSE)
+void WebPortal::handleDiagHeap(AsyncWebServerRequest *request)
+{
+    LogLevel lvl = logger.getLogLevel();
+    if (!(lvl == LogLevel::DEBUG || lvl == LogLevel::VERBOSE))
+    {
+        // Pretend it doesn't exist when not in debug/verbose
+        request->send(404, "text/plain", "Not found");
+        return;
+    }
+
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxAlloc = ESP.getMaxAllocHeap();
+#ifdef BOARD_HAS_PSRAM
+    size_t psramSize = ESP.getPsramSize();
+    size_t psramFree = ESP.getFreePsram();
+#else
+    size_t psramSize = 0;
+    size_t psramFree = 0;
+#endif
+    size_t free8 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t largest8 = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    float frag = (free8 > 0) ? (1.0f - (float)largest8 / (float)free8) : 0.0f;
+
+    AsyncResponseStream *res = request->beginResponseStream("application/json");
+    res->print("{");
+    res->print("\"freeHeap\":"); res->print((unsigned long)freeHeap); res->print(",");
+    res->print("\"maxAllocHeap\":"); res->print((unsigned long)maxAlloc); res->print(",");
+    res->print("\"free8bit\":"); res->print((unsigned long)free8); res->print(",");
+    res->print("\"largest8bit\":"); res->print((unsigned long)largest8); res->print(",");
+    res->print("\"fragmentation\":"); res->print(frag, 4); res->print(",");
+    res->print("\"psramTotal\":"); res->print((unsigned long)psramSize); res->print(",");
+    res->print("\"psramFree\":"); res->print((unsigned long)psramFree); res->print(",");
+    res->print("\"uptimeMs\":"); res->print((unsigned long)millis()); res->print(",");
+    res->print("\"wifiStatus\":"); res->print((int)WiFi.status()); res->print(",");
+    res->print("\"apMode\":"); res->print(isAPMode ? "true" : "false");
+    res->print("}");
+    request->send(res);
+}
+
 // Handle firmware version request
 void WebPortal::handleFirmwareVersion(AsyncWebServerRequest *request)
 {
@@ -1039,6 +1083,7 @@ void WebPortal::handleFirmwareCheck(AsyncWebServerRequest *request)
     // Create HTTP client to check remote version
     HTTPClient http;
     http.setTimeout(5000);
+    http.setReuse(false);
     http.begin(FIRMWARE_UPDATE_URL);
     http.addHeader("User-Agent", "expLORA-Gateway/" + String(FIRMWARE_VERSION));
     
@@ -1072,6 +1117,7 @@ void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
 
   HTTPClient http;
   http.setTimeout(10000);
+  http.setReuse(false);
   if (!http.begin(firmwareUrl)) {
     request->send(500, "application/json", "{\"error\":\"HTTP begin failed\"}");
     return;

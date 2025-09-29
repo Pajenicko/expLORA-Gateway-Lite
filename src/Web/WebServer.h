@@ -113,6 +113,7 @@ private:
     void handleFirmwareUpdate(AsyncWebServerRequest *request);
     void handleReboot(AsyncWebServerRequest *request);
     void handleNotFound(AsyncWebServerRequest *request);
+    void handleDiagHeap(AsyncWebServerRequest *request);
 
     // Firmware update handling
     void handleFirmwarePage(AsyncWebServerRequest *request);
