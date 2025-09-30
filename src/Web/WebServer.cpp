@@ -1024,17 +1024,9 @@ void WebPortal::handleNotFound(AsyncWebServerRequest *request)
     }
 }
 
-// Diagnostics endpoint: heap and system info (visible only on DEBUG/VERBOSE)
+// Diagnostics endpoint: heap and system info 
 void WebPortal::handleDiagHeap(AsyncWebServerRequest *request)
 {
-    LogLevel lvl = logger.getLogLevel();
-    if (!(lvl == LogLevel::DEBUG || lvl == LogLevel::VERBOSE))
-    {
-        // Pretend it doesn't exist when not in debug/verbose
-        request->send(404, "text/plain", "Not found");
-        return;
-    }
-
     size_t freeHeap = ESP.getFreeHeap();
     size_t maxAlloc = ESP.getMaxAllocHeap();
 #ifdef BOARD_HAS_PSRAM

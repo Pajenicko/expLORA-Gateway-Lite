@@ -66,6 +66,13 @@ bool Logger::init(size_t bufferSize)
     logCount = 0;
     initialized = true;
 
+    // Pre-reserve capacity for messages to keep heap usage stable over time
+    for (size_t i = 0; i < logBufferSize; ++i)
+    {
+        logBuffer[i].message.reserve(LOG_MESSAGE_CAPACITY);
+        logBuffer[i].formattedTime.reserve(LOG_TIME_CAPACITY);
+    }
+
     // First log after initialization - use char[] instead of String concat
     char initMsg[64];
     snprintf(initMsg, sizeof(initMsg), "Logging system initialized with %u entries",
@@ -149,8 +156,27 @@ void Logger::log(LogLevel level, const String &message)
     {
         logBuffer[logIndex].timestamp = millis();
         logBuffer[logIndex].level = level;
-        logBuffer[logIndex].message = message;
-        logBuffer[logIndex].formattedTime = timeStamp;
+        // Store a capped version to ensure we never exceed reserved capacity
+        if ((size_t)message.length() > LOG_MESSAGE_CAPACITY)
+        {
+            // Keep the last 3 chars for ellipsis
+            String tmp = message.substring(0, LOG_MESSAGE_CAPACITY - 3);
+            tmp += F("...");
+            logBuffer[logIndex].message = tmp;
+        }
+        else
+        {
+            logBuffer[logIndex].message = message;
+        }
+        // Formatted time is small; still ensure it won't exceed reserved capacity
+        if ((size_t)timeStamp.length() > LOG_TIME_CAPACITY)
+        {
+            logBuffer[logIndex].formattedTime = timeStamp.substring(0, LOG_TIME_CAPACITY);
+        }
+        else
+        {
+            logBuffer[logIndex].formattedTime = timeStamp;
+        }
 
         logIndex = (logIndex + 1) % logBufferSize;
         if (logCount < logBufferSize)

@@ -22,7 +22,7 @@
 #pragma once
 
 // Firmware version
-#define FIRMWARE_VERSION "1.1.2"
+#define FIRMWARE_VERSION "1.1.3"
 
 // OTA Configuration
 #define FIRMWARE_UPDATE_URL "https://pajenicko.cz/webflash/explora-gw-lite-autoupdate.json"
@@ -75,7 +75,7 @@
 
 // Application configuration
 #define MAX_SENSORS 20                // Maximum number of sensors
-#define LOG_BUFFER_SIZE 200           // Size of log buffer
+#define LOG_BUFFER_SIZE 150           // Size of log buffer
 #define AP_TIMEOUT 300000             // AP mode timeout (5 minutes in milliseconds)
 #define WIFI_RECONNECT_INTERVAL 60000 // WiFi reconnect attempt interval (1 minute in milliseconds)
 #define WDT_TIMEOUT 10                // Watchdog timeout in seconds
