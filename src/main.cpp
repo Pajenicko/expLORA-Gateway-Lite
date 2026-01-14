@@ -67,6 +67,27 @@ WebPortal *webPortal;         // Web interface
 unsigned long apStartTime = 0;
 bool temporaryAPMode = false;
 
+// NTP synchronization helper - returns true if time was successfully synchronized
+bool syncNTPTime(const String &timezone, unsigned long timeoutMs = 10000)
+{
+    configTime(0, 0, NTP_SERVER);
+    setenv("TZ", timezone.c_str(), 1);
+    tzset();
+
+    // Wait for actual NTP sync with timeout
+    struct tm timeinfo;
+    unsigned long startWait = millis();
+    while (!getLocalTime(&timeinfo, 100))
+    {
+        if (millis() - startWait > timeoutMs)
+        {
+            return false;
+        }
+        delay(100);
+    }
+    return true;
+}
+
 // File system initialization
 bool initFileSystem()
 {
@@ -244,12 +265,16 @@ void setup()
             logger.info("WiFi connected! IP: " + WiFi.localIP().toString());
             configManager->enableConfigMode(false);
 
-            // Initialize NTP
-            configTime(0, 0, NTP_SERVER);                     // First set to UTC
-            setenv("TZ", configManager->timezone.c_str(), 1); // Set the TZ environment variable
-            tzset();                                          // Apply the time zone
-            logger.info("NTP time set");
-            logger.setTimeInitialized(true);
+            // Initialize NTP with sync verification
+            if (syncNTPTime(configManager->timezone))
+            {
+                logger.info("NTP time synchronized successfully");
+                logger.setTimeInitialized(true);
+            }
+            else
+            {
+                logger.warning("NTP sync failed - time not available");
+            }
         }
         else
         {
@@ -427,10 +452,16 @@ void loop()
             {
                 logger.info("WiFi reconnected! IP: " + WiFi.localIP().toString());
 
-                // Update NTP time
-                configTime(0, 0, NTP_SERVER);                     // First set to UTC
-                setenv("TZ", configManager->timezone.c_str(), 1); // Set the TZ environment variable
-                tzset();                                          // Apply the time zone
+                // Update NTP time with sync verification
+                if (syncNTPTime(configManager->timezone))
+                {
+                    logger.info("NTP time re-synchronized successfully");
+                    logger.setTimeInitialized(true);
+                }
+                else
+                {
+                    logger.warning("NTP re-sync failed after WiFi reconnect");
+                }
             }
             else
             {
@@ -442,7 +473,7 @@ void loop()
     // Short delay for stability
     delay(5);
 
-    // Memory diagnostics every 10 minutes
+    // Memory diagnostics and time check every 10 minutes
     static unsigned long lastMemCheck = 0;
     if (millis() - lastMemCheck > 600000)
     { // 10 minutes
@@ -458,5 +489,30 @@ void loop()
                          " bytes, Largest block: " + String(ESP.getMaxAllocPsram()) + " bytes");
         }
 #endif
+
+        // Periodic time check - re-sync if time was lost
+        struct tm timeinfo;
+        if (!getLocalTime(&timeinfo, 100))
+        {
+            logger.warning("System time invalid - attempting NTP re-sync");
+            if (WiFi.status() == WL_CONNECTED)
+            {
+                if (syncNTPTime(configManager->timezone))
+                {
+                    logger.info("NTP time recovered successfully");
+                    logger.setTimeInitialized(true);
+                }
+                else
+                {
+                    logger.error("NTP re-sync failed - time remains unavailable");
+                    logger.setTimeInitialized(false);
+                }
+            }
+            else
+            {
+                logger.warning("Cannot sync time - WiFi not connected");
+                logger.setTimeInitialized(false);
+            }
+        }
     }
 }

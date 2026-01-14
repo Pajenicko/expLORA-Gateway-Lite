@@ -25,6 +25,9 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 
+// External NTP sync function from main.cpp
+extern bool syncNTPTime(const String &timezone, unsigned long timeoutMs = 10000);
+
 // Constructor
 ConfigManager::ConfigManager(Logger &log, const char *file)
     : logger(log), preferencesInitialized(false), configFile(file)
@@ -342,10 +345,11 @@ bool ConfigManager::setTimezone(const String &newTimezone, bool saveConfig)
 {
     timezone = newTimezone;
 
-    // Configure the time with new timezone
-    configTime(0, 0, NTP_SERVER);      // First set to UTC
-    setenv("TZ", timezone.c_str(), 1); // Set the TZ environment variable
-    tzset();                           // Apply the time zone
+    // Configure the time with new timezone using verified sync
+    if (!syncNTPTime(timezone))
+    {
+        logger.warning("NTP sync failed during timezone change");
+    }
 
     if (saveConfig)
     {
