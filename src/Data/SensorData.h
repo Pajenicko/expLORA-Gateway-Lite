@@ -169,7 +169,7 @@ struct SensorData
     {
         json["deviceType"] = static_cast<uint8_t>(deviceType);
         json["typeName"] = getTypeInfo().name;
-        json["serialNumber"] = String(serialNumber, HEX);
+        json["serialNumber"] = formatSN(serialNumber);
         json["name"] = name;
 
         // Add data specific to sensor type with validity check

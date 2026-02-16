@@ -128,7 +128,7 @@ void HTMLGenerator::addHtmlHeader(String &html, const String &title, bool isAPMo
 void HTMLGenerator::addHtmlFooter(String &html, bool isAPMode)
 {
     html += "<footer>";
-    html += "<p>expLORA Gateway Lite v" + String(FIRMWARE_VERSION) + " &copy; 2025</p>";
+    html += "<p>expLORA Gateway Lite v" + String(FIRMWARE_VERSION) + " &copy; 2026</p>";
     if (!isAPMode)
     {
         html += "<p><button id='btnUpdate' onclick='checkUpdate()' class='btn' style='font-size:11px;padding:5px 10px;'>Check for update</button></p>";
@@ -637,7 +637,7 @@ String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &
             html += "<tr>";
             html += "<td>" + s.name + "</td>";
             html += "<td>" + sensorTypeToString(s.deviceType) + "</td>";
-            html += "<td>" + String(s.serialNumber, HEX) + "</td>";
+            html += "<td>" + formatSN(s.serialNumber) + "</td>";
             html += "<td>" + s.getLastSeenString() + "</td>";
             html += "<td>";
             html += "<a class='btn' href='/sensors/edit?index=" + String(idx) + "'>Edit</a> ";
@@ -1076,11 +1076,11 @@ String HTMLGenerator::generateSensorEditPage(const SensorData &sensor, int index
 
     // Serial number
     html += "<label for='serialNumber'>Serial Number:</label>";
-    html += "<input type='text' id='serialNumber' name='serialNumber' value='" + String(sensor.serialNumber, HEX) + "' required>";
+    html += "<input type='text' id='serialNumber' name='serialNumber' value='" + formatSN(sensor.serialNumber) + "' required>";
 
     // Device key
     html += "<label for='deviceKey'>Device Key:</label>";
-    html += "<input type='text' id='deviceKey' name='deviceKey' value='" + String(sensor.deviceKey, HEX) + "' required>";
+    html += "<input type='text' id='deviceKey' name='deviceKey' value='" + formatKey(sensor.deviceKey) + "' required>";
 
     // New code with a single field
     html += "<label for='customUrl'>Custom URL with Placeholders (Optional):</label>";
@@ -1539,7 +1539,7 @@ String HTMLGenerator::generateAPIPage(const std::vector<SensorData> &sensors)
         html += "      \"name\": \"" + sensor.name + "\",\n";
         html += "      \"type\": " + String(static_cast<uint8_t>(sensor.deviceType)) + ",\n";
         html += "      \"typeName\": \"" + String(sensor.getTypeInfo().name) + "\",\n";
-        html += "      \"serialNumber\": \"" + String(sensor.serialNumber, HEX) + "\",\n";
+        html += "      \"serialNumber\": \"" + formatSN(sensor.serialNumber) + "\",\n";
         html += "      \"lastSeen\": " + (sensor.lastSeen > 0 ? String((millis() - sensor.lastSeen) / 1000) : "-1") + ",\n";
 
         if (sensor.hasTemperature())

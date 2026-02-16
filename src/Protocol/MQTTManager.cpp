@@ -181,7 +181,7 @@ void MQTTManager::publishDiscovery()
     for (const auto &sensor : sensors)
     {
         // Base state topic for this sensor
-        String baseTopic = String(configManager.mqttPrefix) + "/" + String(sensor.serialNumber, HEX);
+        String baseTopic = String(configManager.mqttPrefix) + "/" + formatSN(sensor.serialNumber);
 
         // Publish discovery for each supported value type based on sensor type
         if (sensor.hasTemperature())
@@ -301,7 +301,7 @@ String MQTTManager::buildDiscoveryTopic(const SensorData &sensor, const String &
 
     // Create discovery topic
     return String(configManager.mqttHAPrefix) + "/sensor/" +
-           String(configManager.mqttPrefix) + "_" + String(sensor.serialNumber, HEX) + "_" + valueType + "/config";
+           String(configManager.mqttPrefix) + "_" + formatSN(sensor.serialNumber) + "_" + valueType + "/config";
 }
 
 // Helper function to capitalize first letter
@@ -340,7 +340,7 @@ String MQTTManager::buildDiscoveryJson(const SensorData &sensor, const String &v
     doc["value_template"] = "{{ value }}";
 
     // Unique ID
-    doc["unique_id"] = String(configManager.mqttPrefix) + "_" + String(sensor.serialNumber, HEX) + "_" + valueType;
+    doc["unique_id"] = String(configManager.mqttPrefix) + "_" + formatSN(sensor.serialNumber) + "_" + valueType;
 
     // Availability topic - use LWT (Last Will and Testament)
     doc["availability_topic"] = String(configManager.mqttPrefix) + "/status";
@@ -421,7 +421,7 @@ String MQTTManager::buildDiscoveryJson(const SensorData &sensor, const String &v
 
     // Device information
     JsonObject device = doc.createNestedObject("device");
-    device["identifiers"] = String(sensor.serialNumber, HEX);
+    device["identifiers"] = formatSN(sensor.serialNumber);
     device["name"] = sensor.name;
     device["model"] = sensor.getTypeInfo().name;
     device["manufacturer"] = "expLORA";
@@ -459,7 +459,7 @@ void MQTTManager::publishSensorData(int sensorIndex)
     }
 
     // Base topic for this sensor
-    String baseTopic = String(configManager.mqttPrefix) + "/" + String(sensor->serialNumber, HEX);
+    String baseTopic = String(configManager.mqttPrefix) + "/" + formatSN(sensor->serialNumber);
 
     // Publish each value based on sensor type
     if (sensor->hasTemperature())
@@ -549,7 +549,7 @@ void MQTTManager::publishDiscoveryForSensor(int sensorIndex)
     logger.info("Publishing MQTT discovery for sensor: " + sensor->name);
 
     // Base state topic for this sensor
-    String baseTopic = String(configManager.mqttPrefix) + "/" + String(sensor->serialNumber, HEX);
+    String baseTopic = String(configManager.mqttPrefix) + "/" + formatSN(sensor->serialNumber);
 
     // Publish each value based on sensor type
     if (sensor->hasTemperature())
@@ -647,11 +647,11 @@ void MQTTManager::removeDiscoveryForSensor(uint32_t serialNumber)
         return;
     }
 
-    logger.info("Removing MQTT discovery for sensor with SN: " + String(serialNumber, HEX));
+    logger.info("Removing MQTT discovery for sensor with SN: " + formatSN(serialNumber));
 
     // Create discovery topics for all possible value types
     String baseDiscoveryTopic = String(configManager.mqttHAPrefix) + "/sensor/" + String(configManager.mqttPrefix) + "_" +
-                                String(serialNumber, HEX) + "_";
+                                formatSN(serialNumber) + "_";
 
     // Remove discovery for all possible types
     String types[] = {"temperature", "humidity", "pressure", "co2", "illuminance",

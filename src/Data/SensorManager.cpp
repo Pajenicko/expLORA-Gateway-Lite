@@ -76,7 +76,7 @@ int SensorManager::addSensor(SensorType deviceType, uint32_t serialNumber, uint3
         sensors[existingIndex].name = name;
         sensors[existingIndex].configured = true;
 
-        logger.info("Updated existing sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+        logger.info("Updated existing sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
         saveSensors(false);
         return existingIndex;
     }
@@ -126,7 +126,7 @@ int SensorManager::addSensor(SensorType deviceType, uint32_t serialNumber, uint3
     sensors[newIndex].rssi = 0;
     sensors[newIndex].configured = true;
 
-    logger.info("Added new sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+    logger.info("Added new sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
     saveSensors(false);
     return newIndex;
 }
@@ -514,7 +514,7 @@ bool SensorManager::forwardSensorData(int index)
     // Replace other common placeholders
     url.replace("*BAT*", String(sensors[index].batteryVoltage, 2));
     url.replace("*RSSI*", String(sensors[index].rssi));
-    url.replace("*SN*", String(sensors[index].serialNumber, HEX));
+    url.replace("*SN*", formatSN(sensors[index].serialNumber));
     url.replace("*TYPE*", String(static_cast<uint8_t>(sensors[index].deviceType)));
 
     logger.debug("Forwarding data for sensor " + sensors[index].name + " to URL: " + url);
@@ -581,7 +581,7 @@ bool SensorManager::updateSensorConfig(int index, const String &name, SensorType
     if (existingIndex >= 0 && existingIndex != index)
     {
         logger.warning("Cannot update sensor config: Serial number " +
-                       String(serialNumber, HEX) + " already used by sensor " +
+                       formatSN(serialNumber) + " already used by sensor " +
                        sensors[existingIndex].name);
         return false;
     }
@@ -605,7 +605,7 @@ bool SensorManager::updateSensorConfig(int index, const String &name, SensorType
     sensors[index].rainAmountCorrection = rainAmountCorr;
     sensors[index].rainRateCorrection = rainRateCorr;
 
-    logger.info("Updated configuration for sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+    logger.info("Updated configuration for sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
     saveSensors(false);
     return true;
 }
@@ -627,7 +627,7 @@ bool SensorManager::deleteSensor(int index)
     // Mark as unconfigured instead of physically removing
     sensors[index].configured = false;
 
-    logger.info("Deleted sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+    logger.info("Deleted sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
     saveSensors(false);
     return true;
 }

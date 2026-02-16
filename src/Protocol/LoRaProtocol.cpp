@@ -324,7 +324,7 @@ bool LoRaProtocol::processMeteoPacket(uint8_t *data, uint8_t len, int sensorInde
     float voltage = batteryRaw / 1000.0; // mV to V
 
     // Debug output
-    logger.debug("METEO packet: SN=" + String(serialNumber, HEX) +
+    logger.debug("METEO packet: SN=" + formatSN(serialNumber) +
                  ", battery=" + String(voltage) + "V, values=" + String(data[7]));
 
     // Extract data specific to METEO
@@ -427,7 +427,7 @@ int LoRaProtocol::tryDecryptWithAllKeys(uint8_t *encData, uint8_t len, uint8_t *
             {
                 // We found a match, return sensor index
                 logger.debug("Packet successfully decrypted with key from sensor " +
-                             activeSensors[i].name + " (SN: " + String(activeSensors[i].serialNumber, HEX) + ")");
+                             activeSensors[i].name + " (SN: " + formatSN(activeSensors[i].serialNumber) + ")");
 
                 // Return sensor index in global array
                 return sensorManager.findSensorBySN(activeSensors[i].serialNumber);

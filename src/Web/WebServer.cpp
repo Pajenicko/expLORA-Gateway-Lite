@@ -710,7 +710,7 @@ void WebPortal::handleSensorDelete(AsyncWebServerRequest *request)
 
             if (success)
             {
-                logger.info("Deleted sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+                logger.info("Deleted sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
 
                 // If MQTT is enabled, remove discovery message
                 if (mqttManager && mqttManager->isConnected())
@@ -925,7 +925,7 @@ void WebPortal::handleAPI(AsyncWebServerRequest *request)
             response->print(",");
             response->print(static_cast<uint8_t>(sensor.deviceType));
             response->print(",");
-            response->print(String(sensor.serialNumber, HEX));
+            response->print(formatSN(sensor.serialNumber));
             response->print(",");
             response->print(sensor.lastSeen > 0 ? String((millis() - sensor.lastSeen) / 1000) : "-1");
             response->print(",");
