@@ -20,6 +20,7 @@
  */
 
 #include "SensorManager.h"
+#include "SensorCalibration.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
@@ -194,23 +195,21 @@ bool SensorManager::updateSensorData(int index, float temperature, float humidit
     float originalRainAmount = rainAmount;
     float originalRainRate = rainRate;
 
-    // Apply corrections to input values before updating
-    temperature += sensors[index].temperatureCorrection;
-    humidity += sensors[index].humidityCorrection;
-    pressure += sensors[index].pressureCorrection;
-    ppm += sensors[index].ppmCorrection;
-    lux += sensors[index].luxCorrection;
-    windSpeed *= sensors[index].windSpeedCorrection;
-
-    // For wind direction, ensure value stays in 0-359 range
-    windDirection = (windDirection + sensors[index].windDirectionCorrection) % 360;
-    if (windDirection == 0)
-    {
-        windDirection = 360; // Convert 0 to 360 for consistency
-    }
-
-    rainAmount *= sensors[index].rainAmountCorrection;
-    rainRate *= sensors[index].rainRateCorrection;
+    // Apply corrections to input values before updating.
+    // Delegated to SensorCalibration (covered by native unit tests).
+    // Note: applyWindDirectionCorrection fixes a latent C++ integer-promotion
+    // bug in the previous inline (uint16_t + int) % 360 path that wrapped
+    // negative offsets to ~65k° instead of e.g. 350°.
+    temperature = SensorCalibration::applyOffset(temperature, sensors[index].temperatureCorrection);
+    humidity    = SensorCalibration::applyOffset(humidity,    sensors[index].humidityCorrection);
+    pressure    = SensorCalibration::applyOffset(pressure,    sensors[index].pressureCorrection);
+    ppm         = SensorCalibration::applyOffset(ppm,         sensors[index].ppmCorrection);
+    lux         = SensorCalibration::applyOffset(lux,         sensors[index].luxCorrection);
+    windSpeed   = SensorCalibration::applyMultiplier(windSpeed, sensors[index].windSpeedCorrection);
+    windDirection = SensorCalibration::applyWindDirectionCorrection(
+        windDirection, sensors[index].windDirectionCorrection);
+    rainAmount  = SensorCalibration::applyMultiplier(rainAmount, sensors[index].rainAmountCorrection);
+    rainRate    = SensorCalibration::applyMultiplier(rainRate,   sensors[index].rainRateCorrection);
 
     // Log if corrections were applied (only build string if debug enabled)
     if (logger.getLogLevel() >= LogLevel::DEBUG)

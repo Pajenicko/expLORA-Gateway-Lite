@@ -25,7 +25,7 @@
 #include <WiFi.h>
 
 // Firmware version
-#define FIRMWARE_VERSION "1.1.8"
+#define FIRMWARE_VERSION "1.1.9"
 
 // OTA Configuration
 #define FIRMWARE_UPDATE_URL "https://pajenicko.cz/webflash/explora-gw-lite-autoupdate.json"
