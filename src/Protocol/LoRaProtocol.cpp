@@ -20,6 +20,7 @@
  */
 
 #include "LoRaProtocol.h"
+#include "LoRaCrypto.h"
 
 // Constructor
 LoRaProtocol::LoRaProtocol(LoRaModule &module, SensorManager &manager, Logger &log)
@@ -384,22 +385,10 @@ bool LoRaProtocol::processMeteoPacket(uint8_t *data, uint8_t len, int sensorInde
     return result;
 }
 
-// Decrypt data with key
+// Decrypt data with key — delegated to LoRaCrypto (covered by native unit tests).
 void LoRaProtocol::decryptData(uint8_t *data, uint8_t data_len, uint32_t key)
 {
-    uint8_t *key_bytes = (uint8_t *)&key;
-    uint8_t prev_byte = 0; // Start from zero
-
-    for (uint8_t i = 0; i < data_len; i++)
-    {
-        uint8_t key_byte = key_bytes[i & 0x03];
-        // Current encrypted byte
-        uint8_t current_encrypted = data[i];
-        // Decrypt (XOR same values as in encrypt)
-        data[i] = current_encrypted ^ key_byte ^ (prev_byte >> 1);
-        // Shift "rolling" byte for next iteration
-        prev_byte = current_encrypted;
-    }
+    LoRaCrypto::decrypt(data, data_len, key);
 }
 
 // Try decryption with all known keys
@@ -451,34 +440,16 @@ int LoRaProtocol::tryDecryptWithAllKeys(uint8_t *encData, uint8_t len, uint8_t *
     return -1; // No sensor found
 }
 
-// Validate checksum
+// Validate checksum — delegated to LoRaCrypto (covered by native unit tests).
 bool LoRaProtocol::validateChecksum(uint8_t *buf, uint8_t len)
 {
-    // Check minimum packet length
-    if (len < 2)
-    {
-        return false;
-    }
-
-    // Last byte is checksum of all previous bytes
-    uint8_t receivedChecksum = buf[len - 1];
-
-    // Calculate checksum of data (without checksum)
-    uint8_t calculatedChecksum = calculateChecksum(buf, len - 1);
-
-    // Return true if checksums match
-    return (receivedChecksum == calculatedChecksum);
+    return LoRaCrypto::validateChecksum(buf, len);
 }
 
-// Calculate checksum (simple XOR of all bytes)
+// Calculate checksum — delegated to LoRaCrypto (covered by native unit tests).
 uint8_t LoRaProtocol::calculateChecksum(const uint8_t *data, uint8_t length)
 {
-    uint8_t checksum = 0;
-    for (uint8_t i = 0; i < length; i++)
-    {
-        checksum ^= data[i];
-    }
-    return checksum;
+    return LoRaCrypto::checksum(data, length);
 }
 
 // Check packet validity
