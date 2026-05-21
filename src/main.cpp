@@ -422,43 +422,61 @@ void loop()
         }
     }
 
-    // Check WiFi connection and reconnect if needed
-    if (!configManager->configMode && WiFi.status() != WL_CONNECTED)
+    // Check WiFi connection and reconnect if needed.
+    // Non-blocking state machine: kick off WiFi.begin() once per
+    // WIFI_RECONNECT_INTERVAL window, then poll status across loop iterations
+    // up to RECONNECT_ATTEMPT_TIMEOUT_MS before giving up. Keeps web/DNS/MQTT/LoRa
+    // responsive throughout the reconnect window.
     {
-        unsigned long now = millis();
-        if (now - configManager->lastWifiAttempt > WIFI_RECONNECT_INTERVAL)
+        enum class ReconnectState { Idle, InProgress };
+        static ReconnectState reconnectState = ReconnectState::Idle;
+        static unsigned long reconnectStartedAt = 0;
+        constexpr unsigned long RECONNECT_ATTEMPT_TIMEOUT_MS = 5000; // matches old 10 * 500ms
+
+        if (!configManager->configMode && WiFi.status() != WL_CONNECTED)
         {
-            logger.info("Attempting to reconnect to WiFi...");
-            configManager->lastWifiAttempt = now;
-            WiFi.begin(configManager->wifiSSID.c_str(), configManager->wifiPassword.c_str());
+            unsigned long now = millis();
 
-            int attempts = 0;
-            while (WiFi.status() != WL_CONNECTED && attempts < 10)
+            if (reconnectState == ReconnectState::Idle)
             {
-                delay(500);
-                Serial.print(".");
-                attempts++;
-            }
-
-            if (WiFi.status() == WL_CONNECTED)
-            {
-                logger.info("WiFi reconnected! IP: " + WiFi.localIP().toString());
-
-                // Update NTP time with sync verification
-                if (syncNTPTime(configManager->timezone))
+                if (now - configManager->lastWifiAttempt > WIFI_RECONNECT_INTERVAL)
                 {
-                    logger.info("NTP time re-synchronized successfully");
-                    logger.setTimeInitialized(true);
-                }
-                else
-                {
-                    logger.warning("NTP re-sync failed after WiFi reconnect");
+                    logger.info("Attempting to reconnect to WiFi...");
+                    configManager->lastWifiAttempt = now;
+                    WiFi.begin(configManager->wifiSSID.c_str(), configManager->wifiPassword.c_str());
+                    reconnectStartedAt = now;
+                    reconnectState = ReconnectState::InProgress;
                 }
             }
-            else
+            else // ReconnectState::InProgress
             {
-                logger.warning("Failed to reconnect to WiFi");
+                if (WiFi.status() == WL_CONNECTED)
+                {
+                    logger.info("WiFi reconnected! IP: " + WiFi.localIP().toString());
+                    // NTP sync verification (note: this call may still block briefly)
+                    if (syncNTPTime(configManager->timezone))
+                    {
+                        logger.info("NTP time re-synchronized successfully");
+                        logger.setTimeInitialized(true);
+                    }
+                    else
+                    {
+                        logger.warning("NTP re-sync failed after WiFi reconnect");
+                    }
+                    reconnectState = ReconnectState::Idle;
+                }
+                else if (now - reconnectStartedAt > RECONNECT_ATTEMPT_TIMEOUT_MS)
+                {
+                    logger.warning("Failed to reconnect to WiFi");
+                    reconnectState = ReconnectState::Idle;
+                }
+                // else: keep waiting; loop continues to service web/MQTT/LoRa
             }
+        }
+        else if (reconnectState == ReconnectState::InProgress)
+        {
+            // Connected (or no longer trying) via some other path while we were waiting.
+            reconnectState = ReconnectState::Idle;
         }
     }
 
