@@ -61,8 +61,10 @@ private:
     // Calculate checksum
     uint8_t calculateChecksum(const uint8_t *data, uint8_t length);
 
-    // Check packet validity
-    bool isValidPacket(uint8_t *buf, uint8_t len);
+    // Check packet validity. On failure, `reasonOut` is filled with a
+    // short human-readable description (e.g. "invalid pressure: 1012")
+    // suitable for both logging and surfacing in the web UI.
+    bool isValidPacket(uint8_t *buf, uint8_t len, String &reasonOut);
 
     // Factory method for processing packet according to sensor type
     bool processPacketByType(SensorType type, uint8_t *data, uint8_t len, int sensorIndex, int rssi);

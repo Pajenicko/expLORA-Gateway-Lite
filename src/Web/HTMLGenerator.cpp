@@ -611,10 +611,47 @@ String HTMLGenerator::generateMqttPage(const String &host, int port, const Strin
 }
 
 // Generating page with sensor list
+// Format milliseconds-since-event as a short relative string ("3 min ago",
+// "2 h ago", "5 d ago"). Returns "—" if `hasValue` is false.
+static String formatRelativeMillis(unsigned long nowMillis, unsigned long thenMillis, bool hasValue)
+{
+    if (!hasValue) return "—";
+    unsigned long deltaMs = nowMillis - thenMillis; // wrap-safe via unsigned subtraction
+    unsigned long secs = deltaMs / 1000UL;
+    if (secs < 60)   return String(secs) + " s ago";
+    unsigned long mins = secs / 60UL;
+    if (mins < 60)   return String(mins) + " min ago";
+    unsigned long hrs = mins / 60UL;
+    if (hrs < 48)    return String(hrs) + " h ago";
+    return String(hrs / 24UL) + " d ago";
+}
+
+// Render the health status as a coloured inline-style badge plus optional
+// secondary info (last reject reason, recent counts).
+static String renderHealthBadge(const SensorHealth::Stats &h, unsigned long nowMillis)
+{
+    SensorHealth::Status st = SensorHealth::status(h, nowMillis);
+    const char *label = "?";
+    const char *bg    = "#bdc3c7"; // grey default
+    switch (st)
+    {
+        case SensorHealth::Status::Healthy: label = "Healthy"; bg = "#27ae60"; break;
+        case SensorHealth::Status::Errors:  label = "Errors";  bg = "#e74c3c"; break;
+        case SensorHealth::Status::Stale:   label = "Stale";   bg = "#f39c12"; break;
+        case SensorHealth::Status::Unknown: label = "Unknown"; bg = "#bdc3c7"; break;
+    }
+    String badge = "<span style='background:";
+    badge += bg;
+    badge += ";color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;font-weight:bold;'>";
+    badge += label;
+    badge += "</span>";
+    return badge;
+}
+
 String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &entries)
 {
     String html;
-    html.reserve(8192);
+    html.reserve(12288);
     addHtmlHeader(html, "Sensors");
 
     html += "<div class='card'><h2>Configured Sensors</h2>";
@@ -625,26 +662,60 @@ String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &
     }
     else
     {
-        html += "<table><tr>"
-                "<th>Name</th><th>Type</th><th>Serial Number</th>"
-                "<th>Last Seen</th><th>Actions</th></tr>";
+        // Snapshot 'now' once per page render so every row computes deltas
+        // against the same reference. millis() can wrap every ~50 days but
+        // unsigned subtraction in formatRelativeMillis handles that correctly.
+        const unsigned long nowMillis = millis();
 
-        for (const auto &entry :  entries)
+        html += "<table><tr>"
+                "<th>Name</th><th>Type</th><th>Serial</th>"
+                "<th>Status</th><th>Last Seen</th><th>24h</th><th>Actions</th></tr>";
+
+        for (const auto &entry : entries)
         {
             const auto &s = entry.data;
-            size_t idx = entry.index; // actual index
+            size_t idx    = entry.index;
+            const auto &h = s.health;
+
+            uint32_t ok24h     = SensorHealth::okLast24h(h);
+            uint32_t rejected  = SensorHealth::rejectedLast24h(h);
 
             html += "<tr>";
             html += "<td>" + s.name + "</td>";
             html += "<td>" + sensorTypeToString(s.deviceType) + "</td>";
             html += "<td>" + formatSN(s.serialNumber) + "</td>";
-            html += "<td>" + s.getLastSeenString() + "</td>";
+
+            // Status: badge + optional last reject reason on the line below
+            html += "<td>";
+            html += renderHealthBadge(h, nowMillis);
+            if (h.hasLastReject && h.consecutiveRejections > 0)
+            {
+                html += "<br><small style='color:#c0392b;'>";
+                html += "last reject: ";
+                html += String(h.lastRejectReason);
+                html += " (";
+                html += formatRelativeMillis(nowMillis, h.lastRejectAtMillis, true);
+                html += ")</small>";
+            }
+            html += "</td>";
+
+            // Last seen: prefer relative form derived from our millis snapshot;
+            // the wall-clock form (getLastSeenString) is kept as a tooltip so
+            // users can still see the exact timestamp if NTP is synced.
+            html += "<td title='" + s.getLastSeenString() + "'>";
+            html += formatRelativeMillis(nowMillis, h.lastOkAtMillis, h.hasLastOk);
+            html += "</td>";
+
+            // 24h counts — green ✓ for OK, red ✗ for rejected
+            html += "<td title='Last 24 h sliding window'>";
+            html += "<span style='color:#27ae60;'>" + String(ok24h) + " &#10003;</span> / ";
+            html += "<span style='color:#c0392b;'>" + String(rejected) + " &#10007;</span>";
+            html += "</td>";
+
             html += "<td>";
             html += "<a class='btn' href='/sensors/edit?index=" + String(idx) + "'>Edit</a> ";
-            html += "<a class='btn btn-delete' "
-                    "href='/sensors/delete?index=" +
-                    String(idx) + "' "
-                                  "onclick='return confirm(\"Are you sure you want to delete this sensor?\")'>Delete</a>";
+            html += "<a class='btn btn-delete' href='/sensors/delete?index=" + String(idx) +
+                    "' onclick='return confirm(\"Are you sure you want to delete this sensor?\")'>Delete</a>";
             html += "</td></tr>";
         }
         html += "</table>";

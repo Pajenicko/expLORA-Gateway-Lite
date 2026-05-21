@@ -91,16 +91,20 @@ bool LoRaProtocol::processReceivedPacket()
     logger.debug(hexData);
 
     // Check checksum
+    unsigned long nowMillis = millis();
     if (!validateChecksum(decryptedBuffer, length))
     {
         logger.warning("Invalid checksum in received packet - data corrupted");
+        sensorManager.recordSensorRejection(sensorIndex, nowMillis, "invalid checksum");
         return false;
     }
 
     // Check packet validity
-    if (!isValidPacket(decryptedBuffer, length))
+    String reason;
+    if (!isValidPacket(decryptedBuffer, length, reason))
     {
-        logger.warning("Received packet has invalid format");
+        logger.warning("Received packet has invalid format: " + reason);
+        sensorManager.recordSensorRejection(sensorIndex, nowMillis, reason.c_str());
         return false;
     }
 
@@ -110,7 +114,17 @@ bool LoRaProtocol::processReceivedPacket()
     lastProcessedSensorIndex = sensorIndex;
 
     // Process packet according to sensor type
-    return processPacketByType(deviceType, decryptedBuffer, length, sensorIndex, rssi);
+    bool ok = processPacketByType(deviceType, decryptedBuffer, length, sensorIndex, rssi);
+    if (ok)
+    {
+        sensorManager.recordSensorSuccess(sensorIndex, nowMillis);
+    }
+    else
+    {
+        // Parser rejections, unknown type, updateSensorData failure
+        sensorManager.recordSensorRejection(sensorIndex, nowMillis, "processing failed");
+    }
+    return ok;
 }
 
 bool LoRaProtocol::processPacketByType(SensorType type, uint8_t *data, uint8_t len, int sensorIndex, int rssi)
@@ -375,151 +389,119 @@ uint8_t LoRaProtocol::calculateChecksum(const uint8_t *data, uint8_t length)
     return LoRaCrypto::checksum(data, length);
 }
 
-// Check packet validity
-bool LoRaProtocol::isValidPacket(uint8_t *buf, uint8_t len)
+// Check packet validity. On failure fills `reasonOut` with a short
+// human-readable description (suitable for both logging and the web UI).
+bool LoRaProtocol::isValidPacket(uint8_t *buf, uint8_t len, String &reasonOut)
 {
-    // Check packet length (minimum 7 bytes for header without checksum)
     if (len < 9)
-    { // 8 + 1 for checksum
+    {
+        reasonOut = "packet too short (" + String(len) + " bytes)";
         return false;
     }
 
-    // Get device type and number of values from packet
     uint8_t deviceType = buf[1];
-    uint8_t numValues = buf[7];
+    uint8_t numValues  = buf[7];
 
-    // Validate packet length based on device type and number of values
+    // Length must match the declared value count (METEO has fixed sizes).
     if (deviceType == SENSOR_TYPE_METEO)
     {
-        // METEO packet has 6 values with possible extension to 7 values
-        // (if it also contains rain intensity)
-
-        // Verify that length is 23 (for 7 values) or 21 (for 6 values)
         if (len != 23 && len != 21)
         {
-            logger.warning("Invalid METEO packet length: " + String(len) +
-                           ", expected: 21 or 23 bytes");
+            reasonOut = "invalid METEO packet length: " + String(len) + " (expected 21 or 23)";
             return false;
         }
-
-        // If length is 23 but numValues is 6, adjust expected value count
         if (len == 23 && numValues == 6)
         {
             logger.info("Detected extended METEO packet with 7 values (including rain rate)");
-            // Note: We don't change numValues in the packet because it would change the checksum
         }
     }
     else
     {
-        // Standard verification for other packet types
         if (len != 8 + (numValues * 2) + 1)
         {
-            logger.warning("Invalid packet length: " + String(len) +
-                           ", expected: " + String(8 + (numValues * 2) + 1) +
-                           " for " + String(numValues) + " values");
+            reasonOut = "invalid packet length: " + String(len) +
+                        " (expected " + String(8 + (numValues * 2) + 1) +
+                        " for " + String(numValues) + " values)";
             return false;
         }
     }
 
-    // Check if number of values is reasonable (e.g., not more than 10)
     if (numValues > 10)
     {
-        logger.warning("Invalid number of values: " + String(numValues));
+        reasonOut = "invalid number of values: " + String(numValues);
         return false;
     }
 
-    // Check if deviceType makes sense (between 1-10)
     if (deviceType == 0 || deviceType > 256)
     {
-        logger.warning("Invalid device type: " + String(deviceType));
+        reasonOut = "invalid device type: " + String(deviceType);
         return false;
     }
 
-    // Basic range checks for typical values - specific to device type
+    // Per-type range checks.
     if (deviceType == SENSOR_TYPE_METEO && numValues >= 6)
     {
-        // Temperature check (similar for all sensors)
         int16_t tempSigned = (int16_t)(((uint16_t)buf[8] << 8) | buf[9]);
         if (tempSigned < -5000 || tempSigned > 6000)
         {
-            logger.warning("Invalid temperature: " + String(tempSigned));
+            reasonOut = "invalid temperature: " + String(tempSigned);
             return false;
         }
-
-        // Pressure check (for METEO)
         uint16_t press = ((uint16_t)buf[10] << 8) | buf[11];
         if (press < 8500 || press > 11000)
         {
-            logger.warning("Invalid pressure: " + String(press));
+            reasonOut = "invalid pressure: " + String(press);
             return false;
         }
-
-        // Humidity check (for METEO)
         uint16_t hum = ((uint16_t)buf[12] << 8) | buf[13];
         if (hum > 10000)
-        { // 0-100% with 2 decimal places
-            logger.warning("Invalid humidity: " + String(hum));
+        {
+            reasonOut = "invalid humidity: " + String(hum);
             return false;
         }
-
-        // Wind speed check (0-60 m/s in hundredths of m/s)
         uint16_t windSpeed = ((uint16_t)buf[14] << 8) | buf[15];
         if (windSpeed > 6000)
-        { // Max 60 m/s = 6000 (hundredths)
-            logger.warning("Invalid wind speed: " + String(windSpeed));
+        {
+            reasonOut = "invalid wind speed: " + String(windSpeed);
             return false;
         }
-
-        // Wind direction check (0-360 degrees) to support both 0 - 359 and 1 - 360
-        // We allow 0-359 for compatibility with existing sensors
-        // and 1-360 for new sensors that use 1-360 range
         uint16_t windDir = ((uint16_t)buf[16] << 8) | buf[17];
         if (windDir > 360)
         {
-            logger.warning("Invalid wind direction: " + String(windDir));
+            reasonOut = "invalid wind direction: " + String(windDir);
             return false;
         }
-
-        // Rain amount and rain rate checks are less strict as they can vary greatly
     }
     else if (numValues >= 3)
     {
-        // Standard checks for other sensor types
-        // Temperature check
         int16_t tempSigned = (int16_t)(((uint16_t)buf[8] << 8) | buf[9]);
         if (tempSigned < -5000 || tempSigned > 6000)
         {
-            logger.warning("Invalid temperature: " + String(tempSigned));
+            reasonOut = "invalid temperature: " + String(tempSigned);
             return false;
         }
-
-        // For BME280 check pressure, for SCD40 check PPM
         if (deviceType == SENSOR_TYPE_BME280)
         {
-            // Pressure: 85-110 kPa (850-1100 hPa after division by 10)
             uint16_t press = ((uint16_t)buf[10] << 8) | buf[11];
             if (press < 8500 || press > 11000)
             {
-                logger.warning("Invalid pressure: " + String(press));
+                reasonOut = "invalid pressure: " + String(press);
                 return false;
             }
         }
         else if (deviceType == SENSOR_TYPE_SCD40)
         {
-            // CO2 PPM: 0-10000 ppm (reasonable range for indoor air)
             uint16_t ppm = ((uint16_t)buf[10] << 8) | buf[11];
             if (ppm > 10000)
             {
-                logger.warning("Invalid CO2 PPM: " + String(ppm));
+                reasonOut = "invalid CO2 PPM: " + String(ppm);
                 return false;
             }
         }
-
-        // Humidity check
         uint16_t hum = ((uint16_t)buf[12] << 8) | buf[13];
         if (hum > 10000)
-        { // 0-100% with 2 decimal places
-            logger.warning("Invalid humidity: " + String(hum));
+        {
+            reasonOut = "invalid humidity: " + String(hum);
             return false;
         }
     }

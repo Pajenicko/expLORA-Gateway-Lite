@@ -483,6 +483,19 @@ void loop()
     // Short delay for stability
     delay(5);
 
+    // Periodically rotate per-sensor health buckets so a dead-silent sensor
+    // (no packets at all) eventually drops out of the 24h "OK" tally instead
+    // of clinging to whatever was in the last bucket at boot.
+    static unsigned long lastHealthTick = 0;
+    if (millis() - lastHealthTick > 60000) // once a minute is plenty
+    {
+        lastHealthTick = millis();
+        if (sensorManager)
+        {
+            sensorManager->tickSensorHealth(millis());
+        }
+    }
+
     // Memory diagnostics and time check every 10 minutes
     static unsigned long lastMemCheck = 0;
     if (millis() - lastMemCheck > 600000)

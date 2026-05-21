@@ -946,3 +946,41 @@ bool SensorManager::loadSensors()
     logger.info("Loaded " + String(sensorCount) + " sensors from configuration");
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// Per-sensor health bookkeeping. Out-of-range indices and unconfigured slots
+// are silently ignored — caller doesn't need to know whether a sensor was
+// recently deleted between packet receipt and bookkeeping.
+// ---------------------------------------------------------------------------
+
+void SensorManager::recordSensorSuccess(int index, unsigned long nowMillis)
+{
+    std::lock_guard<std::mutex> lock(sensorMutex);
+    if (index < 0 || static_cast<size_t>(index) >= sensorCount || !sensors[index].configured)
+    {
+        return;
+    }
+    SensorHealth::recordSuccess(sensors[index].health, nowMillis);
+}
+
+void SensorManager::recordSensorRejection(int index, unsigned long nowMillis, const char *reason)
+{
+    std::lock_guard<std::mutex> lock(sensorMutex);
+    if (index < 0 || static_cast<size_t>(index) >= sensorCount || !sensors[index].configured)
+    {
+        return;
+    }
+    SensorHealth::recordRejection(sensors[index].health, nowMillis, reason);
+}
+
+void SensorManager::tickSensorHealth(unsigned long nowMillis)
+{
+    std::lock_guard<std::mutex> lock(sensorMutex);
+    for (size_t i = 0; i < sensorCount; i++)
+    {
+        if (sensors[i].configured)
+        {
+            SensorHealth::advanceBucketsIfNeeded(sensors[i].health, nowMillis);
+        }
+    }
+}
