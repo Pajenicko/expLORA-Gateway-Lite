@@ -61,13 +61,8 @@ bool WebPortal::init()
 {
     logger.info("Initializing web portal");
 
-    // Create AP name (if needed)
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
-
-    String macAddress = WiFi.macAddress();
-    macAddress.replace(":", "");                      // Remove colons
-    apName = "expLORA-GW-" + macAddress.substring(6); // Use last 6 characters of MAC address
+    // Derive the same AP name used at boot (see makeApName() in config.h)
+    apName = makeApName();
 
     // Set mode based on current configuration
     isAPMode = configMode || (WiFi.status() != WL_CONNECTED);
@@ -122,8 +117,8 @@ void WebPortal::setupAP()
     WiFi.mode(WIFI_AP);
     logger.info("Setting up AP: " + apName);
 
-    // AP configuration with 4 clients max and channel 6 (less crowded usually)
-    bool apStarted = WiFi.softAP(apName.c_str());
+    // AP configuration: channel 6 (less crowded usually), max 4 clients
+    bool apStarted = WiFi.softAP(apName.c_str(), nullptr, 6, 0, 4);
     delay(1000); // Give AP time to fully initialize
 
     if (apStarted)
@@ -206,13 +201,16 @@ void WebPortal::setupRoutes()
     logger.info("Routes registered");
 }
 
-// Modify the handleClient method to avoid duplicate processing
+// Called from the main loop. Drives deferred restarts so handlers can safely
+// schedule ESP.restart() without blocking the async response flush.
 void WebPortal::handleClient()
 {
-    // No need to do anything here since the task handles it
-    // We keep this method for compatibility
-
-    // This will handle auto-reboot after OTA process
+    if (restartRequested && (long)(millis() - restartAt) >= 0)
+    {
+        logger.info("Deferred restart firing now");
+        delay(50); // tiny window for any in-flight TCP to drain
+        ESP.restart();
+    }
 }
 
 // Ensure proper cleanup in the destructor
@@ -234,7 +232,53 @@ void WebPortal::processDNS()
     // called automatically in handleClient()
 }
 
-// Switch between AP and client modes
+// Bring the AP up additively. Safe to call while STA is connected or trying
+// to connect — does NOT tear down WiFi the way setupAP() does. Idempotent.
+void WebPortal::ensureAPUp()
+{
+    wifi_mode_t curMode = WiFi.getMode();
+    bool needsApStart = false;
+
+    if (curMode == WIFI_OFF)
+    {
+        WiFi.mode(WIFI_AP);
+        needsApStart = true;
+    }
+    else if (curMode == WIFI_STA)
+    {
+        // Add AP capability without dropping STA
+        WiFi.mode(WIFI_AP_STA);
+        needsApStart = true;
+    }
+    else
+    {
+        // WIFI_AP or WIFI_AP_STA: AP capability present, but the AP may have
+        // been stopped (e.g. after WIFI_OFF + mode flip). softAPIP() returns
+        // 0.0.0.0 when the AP is not actually started.
+        if (WiFi.softAPIP() == IPAddress(0, 0, 0, 0))
+        {
+            needsApStart = true;
+        }
+    }
+
+    if (needsApStart)
+    {
+        WiFi.setTxPower(WIFI_POWER_19_5dBm);
+        bool ok = WiFi.softAP(apName.c_str(), nullptr, 6, 0, 4);
+        delay(100);
+        if (ok)
+        {
+            logger.info("AP brought up additively: " + apName + " @ " + WiFi.softAPIP().toString());
+        }
+        else
+        {
+            logger.error("Failed to start AP additively: " + apName);
+        }
+    }
+}
+
+// Toggle the captive-portal UI/DNS layer. STA is intentionally left alone so
+// the auto-reconnect path keeps working during transient outages.
 void WebPortal::setAPMode(bool enable)
 {
     if (enable == isAPMode)
@@ -244,12 +288,25 @@ void WebPortal::setAPMode(bool enable)
 
     if (enable)
     {
-        // Switch to AP mode
-        setupAP();
+        ensureAPUp();
+
+        IPAddress apIP = WiFi.softAPIP();
+        if (apIP != IPAddress(0, 0, 0, 0))
+        {
+            dnsServer.setTTL(30);
+            dnsServer.start(DNS_PORT, "*", apIP);
+            logger.info("DNS server (re)started on port " + String(DNS_PORT));
+        }
+        else
+        {
+            logger.warning("setAPMode(true): AP IP is 0.0.0.0, DNS not started");
+        }
+        isAPMode = true;
     }
     else
     {
-        // Switch to client mode
+        // Stop captive portal DNS but leave the AP hardware alone. The actual
+        // teardown of the AP radio is handled by main.cpp (AP_TIMEOUT path).
         dnsServer.stop();
         isAPMode = false;
     }
@@ -331,62 +388,83 @@ void WebPortal::handleConfigPost(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /config");
 
-    if (request->hasParam("ssid", true) && request->hasParam("password", true))
+    if (!request->hasParam("ssid", true) || !request->hasParam("password", true))
     {
-        wifiSSID = request->getParam("ssid", true)->value();
-        wifiPassword = request->getParam("password", true)->value();
-
-        // Get timezone if present
-        if (request->hasParam("timezone", true))
-        {
-            String newTimezone = request->getParam("timezone", true)->value();
-            timezone = newTimezone;
-        }
-
-        logger.info("New WiFi configuration - SSID: " + wifiSSID);
-
-        // IMPORTANT: Make sure to save both to ConfigManager and to Preferences
-        // This ensures config persists across reboots
-        configMode = false;
-
-        // Since you have direct reference to these variables, you need to save them
-        // to persistent storage before restarting
-        // Add this code that explicitly saves to both file system and preferences
-
-        // Save to HTML response
-        String html = "<!DOCTYPE html><html><head>";
-        html += "<meta http-equiv='refresh' content='10;url=/'>";
-        html += "<title>Configuration Saved</title></head>";
-        html += "<body><h1>Configuration Saved</h1>";
-        html += "<p>New WiFi settings have been saved. The device will restart in a few seconds.</p>";
-        html += "</body></html>";
-
-        request->send(200, "text/html", html);
-
-        // Make sure configMode is saved as FALSE
-        // This is critical to ensure it doesn't start in AP mode after restart
-        File file = LittleFS.open(CONFIG_FILE, "w");
-        if (file)
-        {
-            DynamicJsonDocument doc(512);
-            doc["ssid"] = wifiSSID;
-            doc["password"] = wifiPassword;
-            doc["configMode"] = false; // Explicitly set to false
-            doc["timezone"] = timezone;
-            serializeJson(doc, file);
-            file.close();
-            logger.info("Configuration saved to file system");
-        }
-
-        // Restart ESP32 after 1 second
-        delay(1000);
-        ESP.restart();
-    }
-    else
-    {
-        // Missing parameters
         request->send(400, "text/plain", "Missing parameters");
+        return;
     }
+
+    String newSsid = request->getParam("ssid", true)->value();
+    newSsid.trim();
+    String newPassword = request->getParam("password", true)->value();
+
+    // Validate SSID: 1..32 chars (IEEE 802.11 limit)
+    if (newSsid.length() == 0)
+    {
+        request->send(400, "text/plain", "SSID cannot be empty");
+        return;
+    }
+    if (newSsid.length() > 32)
+    {
+        request->send(400, "text/plain", "SSID too long (max 32 characters)");
+        return;
+    }
+    // Validate password: either empty (open network) or 8..63 chars (WPA2-PSK)
+    if (newPassword.length() > 0 && newPassword.length() < 8)
+    {
+        request->send(400, "text/plain", "Password must be at least 8 characters or left empty for open networks");
+        return;
+    }
+    if (newPassword.length() > 63)
+    {
+        request->send(400, "text/plain", "Password too long (max 63 characters)");
+        return;
+    }
+
+    wifiSSID = newSsid;
+    wifiPassword = newPassword;
+
+    if (request->hasParam("timezone", true))
+    {
+        timezone = request->getParam("timezone", true)->value();
+    }
+
+    logger.info("New WiFi configuration - SSID: " + wifiSSID);
+    configMode = false;
+
+    // Persist to file system BEFORE responding, so a power loss between send
+    // and restart still leaves valid config on disk.
+    File file = LittleFS.open(CONFIG_FILE, "w");
+    if (!file)
+    {
+        logger.error("Failed to open config file for write");
+        request->send(500, "text/plain", "Failed to save configuration");
+        return;
+    }
+    DynamicJsonDocument doc(512);
+    doc["ssid"] = wifiSSID;
+    doc["password"] = wifiPassword;
+    doc["configMode"] = false; // Explicitly set to false
+    doc["timezone"] = timezone;
+    serializeJson(doc, file);
+    file.close();
+    logger.info("Configuration saved to file system");
+
+    // Build confirmation page
+    String html = "<!DOCTYPE html><html><head>";
+    html += "<meta http-equiv='refresh' content='10;url=/'>";
+    html += "<title>Configuration Saved</title></head>";
+    html += "<body><h1>Configuration Saved</h1>";
+    html += "<p>New WiFi settings have been saved. The device will restart in a few seconds.</p>";
+    html += "</body></html>";
+
+    request->send(200, "text/html", html);
+
+    // Defer the restart so the async server can finish flushing the response.
+    // handleClient() (called from the main loop) will trigger ESP.restart()
+    // once restartAt has been reached.
+    restartAt = millis() + 1500;
+    restartRequested = true;
 }
 
 // Sensors list page

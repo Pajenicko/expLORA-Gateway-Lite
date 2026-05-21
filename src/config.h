@@ -22,9 +22,10 @@
 #pragma once
 
 #include <Arduino.h>
+#include <WiFi.h>
 
 // Firmware version
-#define FIRMWARE_VERSION "1.1.4"
+#define FIRMWARE_VERSION "1.1.6"
 
 // OTA Configuration
 #define FIRMWARE_UPDATE_URL "https://pajenicko.cz/webflash/explora-gw-lite-autoupdate.json"
@@ -100,6 +101,15 @@ inline String formatHex(uint32_t value, uint8_t width)
 
 #define formatSN(val) formatHex(val, 6)
 #define formatKey(val) formatHex(val, 8)
+
+// Generate the unique AP SSID for this device from its MAC address.
+// Format: "expLORA-GW-XXXXXX" where XXXXXX is the last 3 bytes of the MAC in uppercase hex.
+inline String makeApName()
+{
+    String mac = WiFi.macAddress();
+    mac.replace(":", "");
+    return "expLORA-GW-" + mac.substring(6);
+}
 
 #define NTP_SERVER "pool.ntp.org"
 #define DEFAULT_TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3" // Central European Time with auto DST

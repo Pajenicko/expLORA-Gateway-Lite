@@ -212,19 +212,16 @@ void setup()
     apStartTime = millis();
     temporaryAPMode = true;
 
+    String uniqueSSID = makeApName();
+
     if (configManager->configMode || configManager->wifiSSID.length() == 0)
     {
         // We're in configuration mode or don't have credentials - AP mode only
         logger.info("Starting in AP mode only");
         WiFi.mode(WIFI_AP);
 
-        // Get device MAC address and create unique SSID
-        String macAddress = WiFi.macAddress();
-        macAddress.replace(":", "");                                 // Remove colons
-        String uniqueSSID = "expLORA-GW-" + macAddress.substring(6); // Use last 6 characters of MAC address
-
-        // Configure AP with unique SSID
-        WiFi.softAP(uniqueSSID.c_str());
+        // Configure AP with unique SSID (channel 6, max 4 clients)
+        WiFi.softAP(uniqueSSID.c_str(), nullptr, 6, 0, 4);
         logger.info("AP started with SSID: " + uniqueSSID + ", IP: " + WiFi.softAPIP().toString());
 
         configManager->enableConfigMode(true);
@@ -238,13 +235,8 @@ void setup()
         logger.info("Starting in AP+STA mode (dual mode)");
         WiFi.mode(WIFI_AP_STA);
 
-        // Get device MAC address and create unique SSID
-        String macAddress = WiFi.macAddress();
-        macAddress.replace(":", "");                                 // Remove colons
-        String uniqueSSID = "expLORA-GW-" + macAddress.substring(6); // Use last 6 characters of MAC address
-
-        // Configure AP part with unique SSID
-        WiFi.softAP(uniqueSSID.c_str());
+        // Configure AP part with unique SSID (channel 6, max 4 clients)
+        WiFi.softAP(uniqueSSID.c_str(), nullptr, 6, 0, 4);
         logger.info("Temporary AP started with SSID: " + uniqueSSID +
                     " (will be active for 5 minutes). IP: " + WiFi.softAPIP().toString());
 

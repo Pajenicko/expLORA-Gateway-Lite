@@ -73,8 +73,16 @@ private:
     size_t otaUploadExpected = 0;
     size_t otaUploadWritten  = 0;
 
-    // AP mode initialization
+    // Full AP (re)initialization with hard WiFi reset — only safe at boot.
     void setupAP();
+
+    // Bring the AP up additively without disturbing an active STA. Idempotent.
+    void ensureAPUp();
+
+    // Deferred restart: handlers set these and handleClient() executes the reboot
+    // once the response has had time to flush. Avoids ESP.restart() inside async handlers.
+    bool restartRequested = false;
+    unsigned long restartAt = 0;
 
     ConfigManager &configManager; // Reference to configuration
 
