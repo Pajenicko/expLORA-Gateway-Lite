@@ -21,6 +21,7 @@
 
 #include "LoRaProtocol.h"
 #include "LoRaCrypto.h"
+#include "SensorParsers.h"
 
 // Constructor
 LoRaProtocol::LoRaProtocol(LoRaModule &module, SensorManager &manager, Logger &log)
@@ -140,30 +141,15 @@ bool LoRaProtocol::processPacketByType(SensorType type, uint8_t *data, uint8_t l
 // Process packet from BME280 sensor
 bool LoRaProtocol::processBME280Packet(uint8_t *data, uint8_t len, int sensorIndex, int rssi)
 {
-    // Check minimum length for BME280 packet (header + data + checksum)
-    const SensorTypeInfo &typeInfo = getSensorTypeInfo(SensorType::BME280);
-    if (len < typeInfo.packetDataOffset + typeInfo.expectedDataLength + 1)
+    SensorParsers::CommonHeader header;
+    SensorParsers::BME280Data   payload;
+    if (!SensorParsers::parseCommonHeader(data, len, header) ||
+        !SensorParsers::parseBME280(data, len, payload))
     {
         logger.warning("Packet too short for BME280");
         return false;
     }
 
-    // Extract common data
-    uint32_t serialNumber = ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 8) | data[4];
-    uint16_t batteryRaw = ((uint16_t)data[5] << 8) | data[6];
-    float voltage = batteryRaw / 1000.0;
-
-    // Extract data specific to BME280
-    int16_t tempRaw = (int16_t)(((uint16_t)data[8] << 8) | data[9]);
-    float temp = tempRaw / 100.0;
-
-    uint16_t pressRaw = ((uint16_t)data[10] << 8) | data[11];
-    float press = pressRaw / 10.0;
-
-    uint16_t humRaw = ((uint16_t)data[12] << 8) | data[13];
-    float hum = humRaw / 100.0;
-
-    // Update sensor data
     SensorData *sensor = sensorManager.getSensor(sensorIndex);
     if (!sensor)
     {
@@ -171,15 +157,15 @@ bool LoRaProtocol::processBME280Packet(uint8_t *data, uint8_t len, int sensorInd
         return false;
     }
 
-    // Update data with adjusted pressure
-    bool result = sensorManager.updateSensorData(sensorIndex, temp, hum, press,
-                                                 0.0f, 0.0f, voltage, rssi);
+    bool result = sensorManager.updateSensorData(sensorIndex,
+                                                 payload.temperature, payload.humidity, payload.pressure,
+                                                 0.0f, 0.0f, header.batteryVoltage, rssi);
 
     if (result)
     {
         logger.info(sensor->name + " data updated - Temp: " + String(sensor->temperature, 2) + "°C, Hum: " +
                     String(sensor->humidity, 2) + "%, Press: " + String(sensor->pressure, 2) + " hPa, Batt: " +
-                    String(voltage, 2) + "V");
+                    String(header.batteryVoltage, 2) + "V");
     }
 
     return result;
@@ -187,68 +173,45 @@ bool LoRaProtocol::processBME280Packet(uint8_t *data, uint8_t len, int sensorInd
 
 // Process packet from DIY temperature sensor
 bool LoRaProtocol::processDIYTempPacket(uint8_t *data, uint8_t len, int sensorIndex, int rssi) {
-    // Check minimum length for DS18B20 packet (header + data + checksum)
-    const SensorTypeInfo& typeInfo = getSensorTypeInfo(SensorType::DIY_TEMP);
-    if (len < typeInfo.packetDataOffset + typeInfo.expectedDataLength + 1) {
+    SensorParsers::CommonHeader header;
+    SensorParsers::DIYTempData  payload;
+    if (!SensorParsers::parseCommonHeader(data, len, header) ||
+        !SensorParsers::parseDIYTemp(data, len, payload))
+    {
         logger.warning("Packet too short for DS18B20");
         return false;
     }
-    
-    // Extract common data
-    uint32_t serialNumber = ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 8) | data[4];
-    uint16_t batteryRaw = ((uint16_t)data[5] << 8) | data[6];
-    float voltage = batteryRaw / 1000.0;
-    
-    // Extract DS18B20-specific data
-    int16_t tempRaw = (int16_t)(((uint16_t)data[8] << 8) | data[9]);
-    float temp = tempRaw / 100.0;
-    
-    // Aktualizace dat senzoru
+
     SensorData* sensor = sensorManager.getSensor(sensorIndex);
     if (!sensor) {
         logger.error("Error accessing sensor data at index " + String(sensorIndex));
         return false;
     }
-    
-    // Aktualizace dat
-    bool result = sensorManager.updateSensorData(sensorIndex, temp, 0.0f, 0.0f, 
-                                            0.0f, 0.0f, voltage, rssi);
-    
+
+    bool result = sensorManager.updateSensorData(sensorIndex,
+                                                 payload.temperature, 0.0f, 0.0f,
+                                                 0.0f, 0.0f, header.batteryVoltage, rssi);
+
     if (result) {
-        logger.info(sensor->name + " data updated - Temp: " + String(temp, 2) + "°C, Batt: " + 
-                  String(voltage, 2) + "V");
+        logger.info(sensor->name + " data updated - Temp: " + String(payload.temperature, 2) + "°C, Batt: " +
+                  String(header.batteryVoltage, 2) + "V");
     }
-    
+
     return result;
 }
 
 // Process packet from SCD40 sensor
 bool LoRaProtocol::processSCD40Packet(uint8_t *data, uint8_t len, int sensorIndex, int rssi)
 {
-    // Check minimum length for SCD40 packet (header + data + checksum)
-    const SensorTypeInfo &typeInfo = getSensorTypeInfo(SensorType::SCD40);
-    if (len < typeInfo.packetDataOffset + typeInfo.expectedDataLength + 1)
+    SensorParsers::CommonHeader header;
+    SensorParsers::SCD40Data    payload;
+    if (!SensorParsers::parseCommonHeader(data, len, header) ||
+        !SensorParsers::parseSCD40(data, len, payload))
     {
         logger.warning("Packet too short for SCD40");
         return false;
     }
 
-    // Extract common data
-    uint32_t serialNumber = ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 8) | data[4];
-    uint16_t batteryRaw = ((uint16_t)data[5] << 8) | data[6];
-    float voltage = batteryRaw / 1000.0;
-
-    // Extract data specific to SCD40
-    int16_t tempRaw = (int16_t)(((uint16_t)data[8] << 8) | data[9]);
-    float temp = tempRaw / 100.0;
-
-    uint16_t ppmRaw = ((uint16_t)data[10] << 8) | data[11];
-    float ppm = ppmRaw;
-
-    uint16_t humRaw = ((uint16_t)data[12] << 8) | data[13];
-    float hum = humRaw / 100.0;
-
-    // Update sensor data
     SensorData *sensor = sensorManager.getSensor(sensorIndex);
     if (!sensor)
     {
@@ -256,14 +219,15 @@ bool LoRaProtocol::processSCD40Packet(uint8_t *data, uint8_t len, int sensorInde
         return false;
     }
 
-    // Update data
-    bool result = sensorManager.updateSensorData(sensorIndex, temp, hum, 0.0f, ppm, 0.0f, voltage, rssi);
+    bool result = sensorManager.updateSensorData(sensorIndex,
+                                                 payload.temperature, payload.humidity, 0.0f,
+                                                 payload.ppm, 0.0f, header.batteryVoltage, rssi);
 
     if (result)
     {
         logger.info(sensor->name + " data updated - Temp: " + String(sensor->temperature, 2) + "°C, Hum: " +
                     String(sensor->humidity, 2) + "%, CO2: " + String(sensor->ppm, 0) + " ppm, Batt: " +
-                    String(voltage, 2) + "V");
+                    String(header.batteryVoltage, 2) + "V");
     }
 
     return result;
@@ -272,25 +236,15 @@ bool LoRaProtocol::processSCD40Packet(uint8_t *data, uint8_t len, int sensorInde
 // Process packet from VEML7700 sensor
 bool LoRaProtocol::processVEML7700Packet(uint8_t *data, uint8_t len, int sensorIndex, int rssi)
 {
-    // Check minimum length for VEML7700 packet (header + data + checksum)
-    const SensorTypeInfo &typeInfo = getSensorTypeInfo(SensorType::VEML7700);
-    if (len < typeInfo.packetDataOffset + typeInfo.expectedDataLength + 1)
+    SensorParsers::CommonHeader header;
+    SensorParsers::VEML7700Data payload;
+    if (!SensorParsers::parseCommonHeader(data, len, header) ||
+        !SensorParsers::parseVEML7700(data, len, payload))
     {
         logger.warning("Packet too short for VEML7700");
         return false;
     }
 
-    // Extract common data
-    uint32_t serialNumber = ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 8) | data[4];
-    uint16_t batteryRaw = ((uint16_t)data[5] << 8) | data[6];
-    float voltage = batteryRaw / 1000.0;
-
-    // Extract data specific to VEML7700
-    uint32_t luxRaw = ((uint32_t)data[8] << 24) | ((uint32_t)data[9] << 16) |
-                      ((uint32_t)data[10] << 8) | data[11];
-    float lux = luxRaw / 100.0; // Assume lux value is in hundredths
-
-    // Update sensor data
     SensorData *sensor = sensorManager.getSensor(sensorIndex);
     if (!sensor)
     {
@@ -298,13 +252,13 @@ bool LoRaProtocol::processVEML7700Packet(uint8_t *data, uint8_t len, int sensorI
         return false;
     }
 
-    // Update data
-    bool result = sensorManager.updateSensorData(sensorIndex, 0.0f, 0.0f, 0.0f, 0.0f, lux, voltage, rssi);
+    bool result = sensorManager.updateSensorData(sensorIndex, 0.0f, 0.0f, 0.0f, 0.0f,
+                                                 payload.lux, header.batteryVoltage, rssi);
 
     if (result)
     {
-        logger.info(sensor->name + " data updated - Light: " + String(lux, 1) + " lux, Batt: " +
-                    String(voltage, 2) + "V");
+        logger.info(sensor->name + " data updated - Light: " + String(payload.lux, 1) + " lux, Batt: " +
+                    String(header.batteryVoltage, 2) + "V");
     }
 
     return result;
@@ -312,56 +266,23 @@ bool LoRaProtocol::processVEML7700Packet(uint8_t *data, uint8_t len, int sensorI
 
 bool LoRaProtocol::processMeteoPacket(uint8_t *data, uint8_t len, int sensorIndex, int rssi)
 {
-    // Check minimum length for METEO packet
-    if (len < 21)
-    { // 8 (header) + 12 (6 values * 2 bytes) + 1 (checksum)
+    SensorParsers::CommonHeader header;
+    SensorParsers::METEOData    payload;
+    if (!SensorParsers::parseCommonHeader(data, len, header) ||
+        !SensorParsers::parseMETEO(data, len, payload))
+    {
         logger.warning("Packet too short for METEO: " + String(len) + " bytes");
         return false;
     }
 
-    // Extract common data
-    uint32_t serialNumber = ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 8) | data[4];
-    uint16_t batteryRaw = ((uint16_t)data[5] << 8) | data[6];
-    float voltage = batteryRaw / 1000.0; // mV to V
+    logger.debug("METEO packet: SN=" + formatSN(header.serialNumber) +
+                 ", battery=" + String(header.batteryVoltage) + "V, values=" + String(data[7]));
 
-    // Debug output
-    logger.debug("METEO packet: SN=" + formatSN(serialNumber) +
-                 ", battery=" + String(voltage) + "V, values=" + String(data[7]));
+    logger.debug("METEO values: temp=" + String(payload.temperature) + "°C, press=" + String(payload.pressure) +
+                 "hPa, hum=" + String(payload.humidity) + "%, wind=" + String(payload.windSpeed) +
+                 "m/s at " + String(payload.windDirection) + "°, rain=" + String(payload.rainAmount) +
+                 "mm, rate=" + String(payload.rainRate) + "mm/h");
 
-    // Extract data specific to METEO
-    int16_t tempRaw = (int16_t)(((uint16_t)data[8] << 8) | data[9]);
-    float temp = tempRaw / 100.0; // hundredths °C to °C
-
-    uint16_t pressRaw = ((uint16_t)data[10] << 8) | data[11];
-    float press = pressRaw / 10.0; // tenths hPa to hPa
-
-    uint16_t humRaw = ((uint16_t)data[12] << 8) | data[13];
-    float hum = humRaw / 100.0; // hundredths % to %
-
-    // Extract meteorological data
-    uint16_t windSpeedRaw = ((uint16_t)data[14] << 8) | data[15];
-    float windSpeed = windSpeedRaw * 0.111111f; // convert to true m/s with correction
-
-    uint16_t windDirection = ((uint16_t)data[16] << 8) | data[17];
-
-    uint16_t rainAmountRaw = ((uint16_t)data[18] << 8) | data[19];
-    float rainAmount = rainAmountRaw / 5000.0f; // to mm
-
-    float rainRate = 0.0f;
-    // If we have an extended packet, read rain intensity
-    if (len >= 23)
-    {
-        uint16_t rainRateRaw = ((uint16_t)data[20] << 8) | data[21];
-        rainRate = rainRateRaw / 500.0; // to mm/h
-    }
-
-    // Debug log of all values
-    logger.debug("METEO values: temp=" + String(temp) + "°C, press=" + String(press) +
-                 "hPa, hum=" + String(hum) + "%, wind=" + String(windSpeed) +
-                 "m/s at " + String(windDirection) + "°, rain=" + String(rainAmount) +
-                 "mm, rate=" + String(rainRate) + "mm/h");
-
-    // Update sensor data
     SensorData *sensor = sensorManager.getSensor(sensorIndex);
     if (!sensor)
     {
@@ -369,9 +290,11 @@ bool LoRaProtocol::processMeteoPacket(uint8_t *data, uint8_t len, int sensorInde
         return false;
     }
 
-    // Update basic data
-    bool result = sensorManager.updateSensorData(sensorIndex, temp, hum, press, 0.0f, 0.0f, voltage, rssi,
-                                                 windSpeed, windDirection, rainAmount, rainRate);
+    bool result = sensorManager.updateSensorData(sensorIndex,
+                                                 payload.temperature, payload.humidity, payload.pressure,
+                                                 0.0f, 0.0f, header.batteryVoltage, rssi,
+                                                 payload.windSpeed, payload.windDirection,
+                                                 payload.rainAmount, payload.rainRate);
 
     if (result)
     {
@@ -379,7 +302,7 @@ bool LoRaProtocol::processMeteoPacket(uint8_t *data, uint8_t len, int sensorInde
                     String(sensor->humidity, 2) + "%, Press: " + String(sensor->pressure, 2) + " hPa, Wind: " +
                     String(sensor->windSpeed, 1) + " m/s at " + String(sensor->windDirection) + "°, Rain: " +
                     String(sensor->rainAmount, 1) + " mm (rate: " + String(sensor->rainRate, 1) + " mm/h), Batt: " +
-                    String(voltage, 2) + "V");
+                    String(header.batteryVoltage, 2) + "V");
     }
 
     return result;
