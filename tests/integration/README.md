@@ -80,6 +80,34 @@ python3 tests/integration/test_gateway.py --config tests/integration/config.ini 
     --skip-reboot
 ```
 
+## Always start from current firmware
+
+Use the `[flash]` config section (or CLI flags) to reflash the device at
+the start of each run. Three independent toggles:
+
+| Mode | Effect |
+|---|---|
+| `before_test = true` | `pio run -e <env> -t upload` — preserves LittleFS so saved WiFi config still works on reboot |
+| `+ rebuild = true`   | `pio run -e <env>` first — picks up any source edits |
+| `+ erase = true`     | `pio run -e <env> -t erase` first — wipes LittleFS too, **forces re-provisioning** every run |
+
+CLI equivalents:
+
+```bash
+# Reflash with whatever firmware.bin is already built
+python3 tests/integration/test_gateway.py --config tests/integration/config.ini --flash
+
+# Rebuild + flash + run
+python3 tests/integration/test_gateway.py --config tests/integration/config.ini --rebuild
+
+# Truly fresh every run (re-provisions WiFi from scratch)
+python3 tests/integration/test_gateway.py --config tests/integration/config.ini --rebuild --erase
+```
+
+`--rebuild` and `--erase` imply `--flash`. The script locates the `pio`
+binary at `~/.platformio/penv/bin/pio` (or PATH), and project root by
+walking up until it finds `platformio.ini`.
+
 ## Legacy mode (no config file)
 
 Backwards-compatible CLI-only mode (assumes gateway already on the home

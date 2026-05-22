@@ -112,6 +112,11 @@ class Config:
     # [options]
     packet_timeout: int = 1200
     skip_reboot: bool = False
+    # [flash]
+    flash_before_test: bool = False
+    rebuild_before_flash: bool = False
+    erase_before_flash: bool = False
+    pio_env: str = "esp32-s3-devkitc-1"
 
 
 def load_config(path: str) -> Config:
@@ -142,6 +147,11 @@ def load_config(path: str) -> Config:
     if parser.has_section("options"):
         cfg.packet_timeout = parser.getint("options", "packet_timeout", fallback=1200)
         cfg.skip_reboot    = parser.getboolean("options", "skip_reboot", fallback=False)
+    if parser.has_section("flash"):
+        cfg.flash_before_test    = parser.getboolean("flash", "before_test", fallback=False)
+        cfg.rebuild_before_flash = parser.getboolean("flash", "rebuild", fallback=False)
+        cfg.erase_before_flash   = parser.getboolean("flash", "erase", fallback=False)
+        cfg.pio_env              = parser.get("flash", "pio_env", fallback="esp32-s3-devkitc-1").strip()
 
     if not cfg.home_ssid:
         print(f"{RED}ERROR:{RESET} [wifi].ssid is required in {path}")
@@ -305,6 +315,64 @@ def wifi_switch(interface: str, ssid: str, password: str = "") -> bool:
         return wifi_switch_macos(interface, ssid, password)
     wifi_switch_prompt(ssid, password)
     return True
+
+
+# ============================================================ flash before run
+
+def find_pio() -> Optional[str]:
+    """Locate the PlatformIO CLI binary across the usual install locations."""
+    candidates = [
+        os.path.expanduser("~/.platformio/penv/bin/pio"),
+        os.path.expanduser("~/.platformio/penv/Scripts/pio.exe"),  # Windows
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return shutil.which("pio")
+
+
+def find_project_root() -> str:
+    """Walk up from this file until platformio.ini turns up."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    while here and here != os.path.dirname(here):
+        if os.path.exists(os.path.join(here, "platformio.ini")):
+            return here
+        here = os.path.dirname(here)
+    raise RuntimeError("platformio.ini not found in any parent directory")
+
+
+def flash_device(env: str, rebuild: bool, erase: bool) -> None:
+    """Run pio to (optionally rebuild +) flash the device. Streams output.
+
+    Raises subprocess.CalledProcessError on any failure so the caller can
+    decide to bail or continue.
+    """
+    pio = find_pio()
+    if not pio:
+        raise RuntimeError(
+            "pio binary not found — expected at ~/.platformio/penv/bin/pio or on PATH. "
+            "Install PlatformIO (https://platformio.org/install/cli)."
+        )
+    root = find_project_root()
+    print(f"\n{BOLD}{CYAN}== Flashing firmware ({env}){RESET}")
+    info_(f"  project root: {root}")
+    info_(f"  pio binary:   {pio}")
+
+    if rebuild:
+        print(f"\n{CYAN}-- pio run -e {env}  (compile){RESET}")
+        subprocess.check_call([pio, "run", "-e", env], cwd=root)
+
+    if erase:
+        print(f"\n{CYAN}-- pio run -e {env} -t erase  (wipe flash, forces re-provisioning){RESET}")
+        subprocess.check_call([pio, "run", "-e", env, "-t", "erase"], cwd=root)
+
+    print(f"\n{CYAN}-- pio run -e {env} -t upload  (flash){RESET}")
+    subprocess.check_call([pio, "run", "-e", env, "-t", "upload"], cwd=root)
+
+    # Give the chip a couple of seconds to come out of reset before we open
+    # the serial port (avoids racing pio's own auto-reset sequence).
+    time.sleep(2)
+    info_(f"  {GREEN}✓ flash complete{RESET}")
 
 
 # =================================================================== provisioning
@@ -915,6 +983,23 @@ def main():
         default=1200,
         help="Seconds to wait for the first LoRa packet (default: 1200 = 20 min)",
     )
+    parser.add_argument(
+        "--flash",
+        action="store_true",
+        help="Flash firmware via PlatformIO before testing. Preserves LittleFS, "
+        "so saved WiFi config survives.",
+    )
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Run `pio run` to compile before flashing (implies --flash).",
+    )
+    parser.add_argument(
+        "--erase",
+        action="store_true",
+        help="Also erase the entire flash before upload — wipes LittleFS, "
+        "forcing re-provisioning. (implies --flash)",
+    )
     args = parser.parse_args()
 
     if args.no_color:
@@ -947,6 +1032,22 @@ def main():
     if sensor_sn and not sensor_key:
         print(f"{RED}ERROR:{RESET} sensor key required when SN is set (CLI: --test-sensor-key, config: [test_sensor].key)")
         return 2
+
+    # ---------------------------------------------------------------- flash
+    # CLI flags win; --rebuild/--erase imply --flash. Config provides defaults.
+    flash_now   = args.flash or args.rebuild or args.erase or (cfg.flash_before_test if cfg else False)
+    rebuild_now = args.rebuild or (cfg.rebuild_before_flash if cfg else False)
+    erase_now   = args.erase or (cfg.erase_before_flash if cfg else False)
+    pio_env     = cfg.pio_env if cfg else "esp32-s3-devkitc-1"
+    if flash_now:
+        try:
+            flash_device(pio_env, rebuild=rebuild_now, erase=erase_now)
+        except subprocess.CalledProcessError as e:
+            print(f"\n{RED}ERROR:{RESET} pio command failed (exit {e.returncode}). See output above.")
+            return 2
+        except Exception as e:  # noqa: BLE001
+            print(f"\n{RED}ERROR during flash:{RESET} {e}")
+            return 2
 
     # ---------------------------------------------------------------- resolve URL
     # Pick a URL: (a) CLI --url wins, (b) [gateway].ip from config if reachable,
