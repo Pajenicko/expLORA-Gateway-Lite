@@ -1045,15 +1045,19 @@ void WebPortal::handleReboot(AsyncWebServerRequest *request)
 {
     logger.info("HTTP request: GET /reboot - Rebooting device");
 
-    // Send confirmation
     request->send(200, "text/html",
                   "<html><head><meta http-equiv='refresh' content='10;url=/'></head>"
                   "<body><h1>Rebooting</h1>"
                   "<p>The device is rebooting. You will be redirected in 10 seconds...</p></body></html>");
 
-    // Restart ESP32 after 500ms (to allow response to be sent)
-    delay(500);
-    ESP.restart();
+    // Defer the restart so the async server can flush the response cleanly
+    // (same pattern as handleConfigPost). The handleClient() main-loop hook
+    // fires ESP.restart() once restartAt has been reached. The previous
+    // inline `delay(500); ESP.restart()` raced with the async-server task
+    // and intermittently lost the restart entirely when the LoRa loop was
+    // busy at the same moment.
+    restartAt = millis() + 1500;
+    restartRequested = true;
 }
 
 // Handle unknown pages

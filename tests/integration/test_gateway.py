@@ -1048,9 +1048,13 @@ def t_reboot_round_trip(r: Runner, current_version: str) -> str:
     except requests.exceptions.RequestException as e:
         info_(f"  /reboot failed (expected — device rebooting): {e}")
 
-    # 3) wait for device to go down (it might already be down)
-    info_("  waiting up to 10 s for device to drop off …")
-    deadline = time.time() + 10
+    # 3) wait for device to go down (it might already be down). 20 s
+    # is generous — the deferred-restart hook fires within ~1.5 s of the
+    # request, plus a few seconds for the WiFi stack to actually drop the
+    # association. We've seen the original 10 s window be too short when
+    # the main loop is busy with LoRa packet processing.
+    info_("  waiting up to 20 s for device to drop off …")
+    deadline = time.time() + 20
     went_down = False
     while time.time() < deadline:
         try:
@@ -1060,8 +1064,10 @@ def t_reboot_round_trip(r: Runner, current_version: str) -> str:
             break
         time.sleep(0.5)
     if not went_down:
-        # Device didn't reboot — endpoint stayed up the whole time.
-        raise TestFailed("/reboot did not cause the device to drop off (endpoint stayed responsive)")
+        raise TestFailed(
+            "/reboot did not cause the device to drop off within 20 s "
+            "(endpoint stayed responsive) — handleReboot may not have run"
+        )
 
     # 4) wait up to 60 s for device to come back
     info_("  waiting up to 60 s for device to come back …")
