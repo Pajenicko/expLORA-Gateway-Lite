@@ -296,28 +296,60 @@ class SerialMonitor:
 
 # =============================================================== wifi switching
 
+def _macos_power_cycle_wifi(interface: str) -> None:
+    """Turn the WiFi interface off and back on. Forces macOS to re-scan
+    visible networks within ~3 s — the cache otherwise refreshes only
+    every 30 s or so, which is too slow when we're chasing an AP that
+    just appeared a moment ago."""
+    info_(f"  power-cycling {interface} to force a fresh WiFi scan …")
+    subprocess.run(["networksetup", "-setairportpower", interface, "off"], check=False)
+    time.sleep(2)
+    subprocess.run(["networksetup", "-setairportpower", interface, "on"], check=False)
+    time.sleep(4)  # let it re-scan
+
+
 def wifi_switch_macos(interface: str, ssid: str, password: str = "") -> bool:
-    """Switch the named macOS interface to the given SSID. Empty password = open net."""
+    """Switch the named macOS interface to the given SSID. Empty password = open net.
+
+    Retries with backoff if macOS hasn't noticed the AP yet. After two
+    failed attempts, power-cycles the WiFi adapter to force an immediate
+    scan refresh — necessary when we're trying to join an AP that started
+    broadcasting only seconds ago.
+    """
     cmd = ["networksetup", "-setairportnetwork", interface, ssid]
     if password:
         cmd.append(password)
-    info_(f"  $ {' '.join(cmd if not password else cmd[:-1] + ['<password>'])}")
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except subprocess.TimeoutExpired:
-        print(f"{RED}networksetup timed out{RESET}")
-        return False
-    output = (result.stdout + result.stderr).strip()
-    if output:
-        info_(f"  {output}")
-    # networksetup returns 0 even on failure sometimes — the stdout has the
-    # only reliable signal ("Could not find network", "Failed to join", …)
-    bad_phrases = ("could not", "failed", "error", "unable")
-    if any(p in output.lower() for p in bad_phrases):
-        return False
-    # Give the OS a few seconds to associate + get DHCP
-    time.sleep(4)
-    return True
+    safe_cmd = cmd if not password else cmd[:-1] + ["<password>"]
+
+    # Total budget: ~35 s. macOS occasionally takes that long to surface a
+    # freshly-started AP in its scan cache.
+    backoffs = [0, 4, 6, 8, 10]
+    bad_phrases = ("could not find", "could not", "failed", "error", "unable")
+    for attempt, wait in enumerate(backoffs, start=1):
+        if wait:
+            time.sleep(wait)
+        info_(f"  $ {' '.join(safe_cmd)}  (attempt {attempt}/{len(backoffs)})")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            info_("  networksetup timed out — retrying")
+            continue
+        output = (result.stdout + result.stderr).strip()
+        if output:
+            info_(f"  {output}")
+        # networksetup exits 0 even when it failed to find the network; the
+        # textual output is the only reliable signal.
+        if not any(p in output.lower() for p in bad_phrases):
+            time.sleep(4)  # let association + DHCP settle
+            return True
+        # Halfway through the retry budget, force a fresh scan. We only do
+        # this once — it briefly disconnects the current WiFi, which we'd
+        # rather not do twice.
+        if attempt == 2:
+            _macos_power_cycle_wifi(interface)
+
+    print(f"{RED}networksetup gave up after {len(backoffs)} attempts (~35 s) — AP not visible to macOS{RESET}")
+    return False
 
 
 def wifi_switch_prompt(ssid: str, password: str = ""):
