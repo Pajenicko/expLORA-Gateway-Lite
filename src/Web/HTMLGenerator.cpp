@@ -706,10 +706,26 @@ String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &
             html += formatRelativeMillis(nowMillis, h.lastOkAtMillis, h.hasLastOk);
             html += "</td>";
 
-            // 24h counts — green ✓ for OK, red ✗ for rejected
+            // 24h column: minimal noise when healthy, loud when broken.
+            //   - no activity:       em-dash
+            //   - all OK:            plain count
+            //   - has rejections:    "<ok> · <reject> err" with reject part red+bold
             html += "<td title='Last 24 h sliding window'>";
-            html += "<span style='color:#27ae60;'>" + String(ok24h) + " &#10003;</span> / ";
-            html += "<span style='color:#c0392b;'>" + String(rejected) + " &#10007;</span>";
+            if (ok24h == 0 && rejected == 0)
+            {
+                html += "&mdash;";
+            }
+            else if (rejected == 0)
+            {
+                html += String(ok24h);
+            }
+            else
+            {
+                html += String(ok24h);
+                html += " &middot; <span style='color:#c0392b;font-weight:bold;'>";
+                html += String(rejected);
+                html += " err</span>";
+            }
             html += "</td>";
 
             html += "<td>";
