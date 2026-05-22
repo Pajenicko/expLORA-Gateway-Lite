@@ -1,48 +1,59 @@
 #!/usr/bin/env python3
 """
-Integration smoke test for a running expLORA Gateway Lite device.
+Integration smoke test for an expLORA Gateway Lite device.
 
-Hits the device over HTTP and asserts response status, content type,
-JSON shape, validation behaviour, and (optionally) reboot recovery.
+Two operating modes:
+
+1. Config-file mode (recommended for repeat runs)
+   --------------------------------------------
+   Reads everything from an INI file: home WiFi credentials, sensor key,
+   sensor SN, gateway IP, serial port. If the gateway's IP from the config
+   responds, the script jumps straight to the test phase. If not, the script
+   provisions the device automatically:
+     - reads UART to discover the gateway's AP SSID
+     - (macOS) switches WiFi to that AP via `networksetup`
+       (non-macOS) prints instructions and waits for ENTER
+     - POSTs the WiFi credentials to /config at 192.168.4.1
+     - watches UART for "WiFi connected! IP: x.x.x.x" after the reboot
+     - switches back to the home WiFi
+     - runs the full HTTP test suite against the discovered IP
+
+   Usage:
+       cp tests/integration/config.example.ini tests/integration/config.ini
+       # fill in WiFi creds + sensor SN/key in config.ini
+       python3 tests/integration/test_gateway.py --config tests/integration/config.ini
+
+2. Legacy CLI-args mode (no config file)
+   --------------------------------------
+   All values via flags, gateway assumed already on the home network.
+   No provisioning, no UART, no WiFi switching.
+
+       python3 tests/integration/test_gateway.py --url http://192.168.1.42
+       python3 tests/integration/test_gateway.py --url http://192.168.1.42 \\
+           --test-sensor-sn 475481 --test-sensor-key D43C2780
 
 Requirements:
-    pip install requests
-
-Usage:
-    # Basic smoke (~ a few seconds, never disrupts the device beyond reboot)
-    python tests/integration/test_gateway.py --url http://192.168.1.42
-
-    # Skip the reboot test (no downtime)
-    python tests/integration/test_gateway.py --url http://192.168.1.42 --skip-reboot
-
-    # Full end-to-end with a real sensor — adds the sensor (if not already
-    # there), waits up to 20 min for a LoRa packet, verifies the gateway
-    # decoded it into physically sensible values:
-    python tests/integration/test_gateway.py \\
-        --url http://192.168.1.42 \\
-        --test-sensor-sn 475481 \\
-        --test-sensor-key D43C2780 \\
-        --test-sensor-name integration-test \\
-        --test-sensor-type 1
-
-    # Useful flags:
-    #   -v / --verbose      print every HTTP request URL
-    #   --no-color          disable ANSI colours (for CI / log files)
-    #   --skip-reboot       skip the reboot recovery test
-    #   --packet-timeout N  override the 1200 s default wait for a packet
+    pip install requests pyserial
 
 Exit codes:
     0   all tests passed
     1   at least one test failed
-    2   could not connect to device
+    2   could not connect to device, missing requirement, or provisioning failed
 """
 
 import argparse
-import json
+import configparser
+import os
+import platform
+import queue
 import re
+import shutil
+import subprocess
 import sys
+import threading
 import time
-from typing import Callable, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional
 
 try:
     import requests
@@ -50,8 +61,19 @@ except ImportError:
     print("ERROR: this script needs 'requests'. Run:  pip install requests")
     sys.exit(2)
 
+# pyserial is only required when the config-file flow needs UART access.
+# Import lazily so the CLI-args legacy mode still works without it.
+try:
+    import serial  # noqa: F401
+    import serial.tools.list_ports as list_ports
+    HAVE_PYSERIAL = True
+except ImportError:
+    HAVE_PYSERIAL = False
+
 # --------------------------------------------------------------------- output
 
+# (also used by Config / SerialMonitor / provisioning — defined first so they
+# can colour their own log lines)
 # Globally mutable so --no-color can blank them in one place
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -65,6 +87,349 @@ BOLD = "\033[1m"
 def disable_colors():
     global GREEN, RED, YELLOW, CYAN, DIM, RESET, BOLD
     GREEN = RED = YELLOW = CYAN = DIM = RESET = BOLD = ""
+
+
+# ====================================================================== config
+
+@dataclass
+class Config:
+    """Parsed INI config. Optional fields stay empty strings if absent."""
+    # [gateway]
+    ip: str = ""
+    ap_ssid_prefix: str = "expLORA-GW-"
+    serial_port: str = ""
+    serial_baud: int = 115200
+    wifi_interface: str = "en0"
+    # [wifi]
+    home_ssid: str = ""
+    home_password: str = ""
+    timezone: str = "CET-1CEST,M3.5.0,M10.5.0/3"
+    # [test_sensor]
+    sensor_sn: str = ""
+    sensor_key: str = ""
+    sensor_type: int = 1
+    sensor_name: str = "integration-test"
+    # [options]
+    packet_timeout: int = 1200
+    skip_reboot: bool = False
+
+
+def load_config(path: str) -> Config:
+    if not os.path.exists(path):
+        print(f"{RED}ERROR:{RESET} config file not found: {path}")
+        print(f"Hint: cp tests/integration/config.example.ini {path}  and edit it.")
+        sys.exit(2)
+
+    parser = configparser.ConfigParser()
+    parser.read(path)
+    cfg = Config()
+
+    if parser.has_section("gateway"):
+        cfg.ip             = parser.get("gateway", "ip", fallback="").strip()
+        cfg.ap_ssid_prefix = parser.get("gateway", "ap_ssid_prefix", fallback="expLORA-GW-").strip()
+        cfg.serial_port    = parser.get("gateway", "serial_port", fallback="").strip()
+        cfg.serial_baud    = parser.getint("gateway", "serial_baud", fallback=115200)
+        cfg.wifi_interface = parser.get("gateway", "wifi_interface", fallback="en0").strip()
+    if parser.has_section("wifi"):
+        cfg.home_ssid     = parser.get("wifi", "ssid", fallback="").strip()
+        cfg.home_password = parser.get("wifi", "password", fallback="").strip()
+        cfg.timezone      = parser.get("wifi", "timezone", fallback=cfg.timezone).strip()
+    if parser.has_section("test_sensor"):
+        cfg.sensor_sn   = parser.get("test_sensor", "sn", fallback="").strip()
+        cfg.sensor_key  = parser.get("test_sensor", "key", fallback="").strip()
+        cfg.sensor_type = parser.getint("test_sensor", "type", fallback=1)
+        cfg.sensor_name = parser.get("test_sensor", "name", fallback="integration-test").strip()
+    if parser.has_section("options"):
+        cfg.packet_timeout = parser.getint("options", "packet_timeout", fallback=1200)
+        cfg.skip_reboot    = parser.getboolean("options", "skip_reboot", fallback=False)
+
+    if not cfg.home_ssid:
+        print(f"{RED}ERROR:{RESET} [wifi].ssid is required in {path}")
+        sys.exit(2)
+
+    return cfg
+
+
+# ============================================================== serial monitor
+
+# ESP32-S3 USB VID/PIDs we'll happily autodetect.
+#   0x303A:0x1001 — Espressif USB JTAG/serial (built into ESP32-S3)
+#   0x10C4:0xEA60 — Silicon Labs CP210x (older boards)
+#   0x1A86:0x55D4 — WCH CH343 / 0x7523 — CH340 (popular Chinese clones)
+KNOWN_USB_VID_PID = {
+    (0x303A, 0x1001),
+    (0x10C4, 0xEA60),
+    (0x1A86, 0x55D4),
+    (0x1A86, 0x7523),
+}
+
+
+def autodetect_serial_port() -> Optional[str]:
+    if not HAVE_PYSERIAL:
+        return None
+    candidates = []
+    for p in list_ports.comports():
+        if p.vid is not None and (p.vid, p.pid) in KNOWN_USB_VID_PID:
+            candidates.append(p.device)
+    if candidates:
+        return candidates[0]
+    # Fallback: any cu.usbmodem* on macOS or ttyACM* on Linux
+    for p in list_ports.comports():
+        name = p.device.lower()
+        if "usbmodem" in name or "ttyacm" in name or "slab_usb" in name:
+            return p.device
+    return None
+
+
+class SerialMonitor:
+    """Reads UART in a background thread and exposes wait-for-pattern.
+
+    Lines are pushed to a queue with their wall-clock timestamp so the
+    operator can see the device's log as it streams.
+    """
+    def __init__(self, port: str, baud: int = 115200, echo: bool = True):
+        if not HAVE_PYSERIAL:
+            raise RuntimeError("pyserial not installed (pip install pyserial)")
+        self.port = port
+        self.baud = baud
+        self.echo = echo
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._lines: "queue.Queue[str]" = queue.Queue()
+        self._ser: Optional["serial.Serial"] = None  # type: ignore[name-defined]
+
+    def start(self):
+        self._ser = serial.Serial(self.port, self.baud, timeout=0.5)
+        # Give a moment for the OS to settle after open (some boards reset
+        # on serial open thanks to DTR/RTS)
+        time.sleep(0.2)
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+        info_(f"  serial monitor opened on {self.port} @ {self.baud}")
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+        if self._ser:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+
+    def _reader(self):
+        buf = b""
+        assert self._ser is not None
+        while not self._stop_event.is_set():
+            try:
+                chunk = self._ser.read(256)
+            except Exception as e:
+                info_(f"  serial read error: {e}")
+                return
+            if not chunk:
+                continue
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                try:
+                    text = line.decode("utf-8", errors="replace").rstrip("\r")
+                except Exception:
+                    text = repr(line)
+                if self.echo:
+                    print(f"{DIM}    serial: {text}{RESET}")
+                self._lines.put(text)
+
+    def wait_for(self, pattern: str, timeout: float, label: str = "") -> Optional[re.Match]:
+        """Block until a line matches `pattern` (regex) or `timeout` elapses."""
+        deadline = time.time() + timeout
+        prog = re.compile(pattern)
+        if label:
+            info_(f"  waiting up to {int(timeout)}s for: {label}")
+        while time.time() < deadline:
+            try:
+                line = self._lines.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            m = prog.search(line)
+            if m:
+                return m
+        return None
+
+    def drain(self):
+        """Discard any queued lines (useful before triggering an event)."""
+        while True:
+            try:
+                self._lines.get_nowait()
+            except queue.Empty:
+                return
+
+
+# =============================================================== wifi switching
+
+def wifi_switch_macos(interface: str, ssid: str, password: str = "") -> bool:
+    """Switch the named macOS interface to the given SSID. Empty password = open net."""
+    cmd = ["networksetup", "-setairportnetwork", interface, ssid]
+    if password:
+        cmd.append(password)
+    info_(f"  $ {' '.join(cmd if not password else cmd[:-1] + ['<password>'])}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        print(f"{RED}networksetup timed out{RESET}")
+        return False
+    output = (result.stdout + result.stderr).strip()
+    if output:
+        info_(f"  {output}")
+    # networksetup returns 0 even on failure sometimes — the stdout has the
+    # only reliable signal ("Could not find network", "Failed to join", …)
+    bad_phrases = ("could not", "failed", "error", "unable")
+    if any(p in output.lower() for p in bad_phrases):
+        return False
+    # Give the OS a few seconds to associate + get DHCP
+    time.sleep(4)
+    return True
+
+
+def wifi_switch_prompt(ssid: str, password: str = ""):
+    """Cross-platform fallback: tell the user what to do, wait for confirmation."""
+    if password:
+        print(f"  {YELLOW}>>{RESET} Please connect this computer to WiFi {BOLD}{ssid!r}{RESET} (password: {password!r})")
+    else:
+        print(f"  {YELLOW}>>{RESET} Please connect this computer to the open WiFi {BOLD}{ssid!r}{RESET}")
+    input(f"  Press {BOLD}ENTER{RESET} once connected … ")
+
+
+def wifi_switch(interface: str, ssid: str, password: str = "") -> bool:
+    """Dispatch to OS-specific implementation; fall back to prompts."""
+    if platform.system() == "Darwin" and shutil.which("networksetup"):
+        return wifi_switch_macos(interface, ssid, password)
+    wifi_switch_prompt(ssid, password)
+    return True
+
+
+# =================================================================== provisioning
+
+# Regex patterns matching the firmware's serial log
+RE_BOOT_BANNER = r"expLORA Gateway Lite starting up"
+RE_AP_STARTED  = r"AP started with SSID: (\S+)"
+RE_TEMP_AP     = r"Temporary AP started with SSID: (\S+)"
+RE_STA_IP      = r"WiFi connected[^!]*! IP: (\d+\.\d+\.\d+\.\d+)"
+
+
+def _http_alive(url: str, timeout: float = 3.0) -> bool:
+    try:
+        resp = requests.get(url, timeout=timeout)
+        return resp.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+
+def provision_gateway(cfg: Config) -> str:
+    """Walk the device through STA provisioning. Returns the discovered IP.
+
+    Flow:
+        1. Open serial monitor (autodetected or configured port)
+        2. Watch UART for "AP started" — extract the actual AP SSID
+        3. Switch the host WiFi to that AP (macOS auto, prompt elsewhere)
+        4. Verify we can reach 192.168.4.1
+        5. POST /config with the home WiFi credentials
+        6. Wait for the post-reboot banner, then for "WiFi connected! IP: ..."
+        7. Switch host WiFi back to home
+        8. Return discovered IP
+    """
+    print(f"\n{BOLD}{CYAN}== Provisioning gateway =={RESET}")
+
+    port = cfg.serial_port or autodetect_serial_port()
+    if not port:
+        raise RuntimeError(
+            "no serial port — set [gateway].serial_port in config.ini or plug "
+            "an ESP32-S3 in via USB"
+        )
+
+    monitor = SerialMonitor(port, baud=cfg.serial_baud, echo=True)
+    monitor.start()
+    try:
+        # 1. Discover the AP SSID from the boot log. The board may already
+        # be running; we tolerate that and fall back to ap_ssid_prefix if
+        # no banner shows up within 5 s.
+        info_("  waiting up to 5 s for an AP-started log line …")
+        m = monitor.wait_for(f"({RE_TEMP_AP}|{RE_AP_STARTED})", timeout=5)
+        if m:
+            ap_ssid = m.group(2) or m.group(3)
+            info_(f"  discovered AP SSID: {ap_ssid}")
+        else:
+            # Last-ditch: take any expLORA-GW- prefix mac the user wrote
+            ap_ssid = cfg.ap_ssid_prefix
+            info_(f"  no AP log line — falling back to prefix: {ap_ssid!r}")
+            info_(f"  {YELLOW}you may need to wait until the device finishes booting{RESET}")
+
+        # 2. Switch host WiFi to the gateway AP
+        if not wifi_switch(cfg.wifi_interface, ap_ssid):
+            raise RuntimeError(f"failed to switch WiFi to {ap_ssid!r}")
+
+        # 3. Confirm the AP is reachable
+        if not _http_alive("http://192.168.4.1/firmware/version"):
+            raise RuntimeError(
+                "WiFi switched but http://192.168.4.1 unreachable — is the "
+                "gateway actually broadcasting an AP?"
+            )
+        info_("  gateway AP confirmed reachable at 192.168.4.1")
+
+        # 4. POST credentials. Don't worry about response — device reboots
+        # ~1.5 s later (handleClient deferred restart) so the response may
+        # not finish cleanly.
+        info_("  POSTing /config (WiFi creds)")
+        monitor.drain()
+        try:
+            requests.post(
+                "http://192.168.4.1/config",
+                data={
+                    "ssid": cfg.home_ssid,
+                    "password": cfg.home_password,
+                    "timezone": cfg.timezone,
+                },
+                timeout=5,
+            )
+        except requests.exceptions.RequestException as e:
+            info_(f"  /config POST raised {e} — device is probably already restarting")
+
+        # 5. Wait for the post-reboot banner (= confirms restart) and then
+        # for the STA-connected line carrying the new IP
+        m = monitor.wait_for(RE_BOOT_BANNER, timeout=15, label="post-reboot banner")
+        if not m:
+            raise RuntimeError("device did not reboot within 15 s of POST /config")
+
+        m = monitor.wait_for(RE_STA_IP, timeout=30, label='"WiFi connected! IP: …"')
+        if not m:
+            raise RuntimeError(
+                "device rebooted but did not join home WiFi within 30 s — "
+                "check SSID / password in config"
+            )
+        new_ip = m.group(1)
+        print(f"  {GREEN}✓ gateway is now on the home network at {BOLD}{new_ip}{RESET}")
+
+        # 6. Switch host back to home WiFi
+        info_("\n  switching host WiFi back to home network …")
+        if cfg.home_password:
+            wifi_switch(cfg.wifi_interface, cfg.home_ssid, cfg.home_password)
+        else:
+            # Even for open home networks, the user just specified the SSID
+            wifi_switch(cfg.wifi_interface, cfg.home_ssid)
+
+        # 7. Confirm we can reach the device on the home network
+        info_("  confirming gateway is reachable from host …")
+        ok_deadline = time.time() + 15
+        while time.time() < ok_deadline:
+            if _http_alive(f"http://{new_ip}/firmware/version"):
+                info_(f"  reachable at http://{new_ip}")
+                return new_ip
+            time.sleep(1)
+        raise RuntimeError(
+            f"host switched WiFi but http://{new_ip} not reachable yet — try again in a moment"
+        )
+
+    finally:
+        monitor.stop()
 
 
 def pass_(name: str, detail: str = ""):
@@ -494,11 +859,21 @@ def t_reboot_round_trip(r: Runner, current_version: str) -> str:
 # ----------------------------------------------------------------- main
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # In config-file mode, --url is derived from [gateway].ip (or auto-discovered).
+    # In legacy mode, --url is required.
+    parser.add_argument(
+        "--config",
+        help="INI config file (recommended). When set, --url becomes optional "
+        "and the script can auto-provision via UART + WiFi switching.",
+    )
     parser.add_argument(
         "--url",
-        required=True,
-        help="Base URL of the gateway (e.g. http://192.168.1.42 or http://gateway.local)",
+        help="Base URL of the gateway (legacy mode). Ignored when --config is given "
+        "and the configured IP responds.",
     )
     parser.add_argument(
         "--skip-reboot",
@@ -545,23 +920,71 @@ def main():
     if args.no_color:
         disable_colors()
 
-    if args.test_sensor_sn and not args.test_sensor_key:
-        print(f"{RED}ERROR:{RESET} --test-sensor-key is required when --test-sensor-sn is given")
+    # ---------------------------------------------------------------- resolve
+    # Resolve the inputs (config-file mode wins over CLI args where set).
+    cfg: Optional[Config] = None
+    if args.config:
+        cfg = load_config(args.config)
+        # Apply CLI overrides on top of the config
+        sensor_sn       = args.test_sensor_sn or cfg.sensor_sn
+        sensor_key      = args.test_sensor_key or cfg.sensor_key
+        sensor_name     = args.test_sensor_name or cfg.sensor_name
+        sensor_type     = args.test_sensor_type if args.test_sensor_type != 1 else cfg.sensor_type
+        packet_timeout  = args.packet_timeout if args.packet_timeout != 1200 else cfg.packet_timeout
+        skip_reboot     = args.skip_reboot or cfg.skip_reboot
+    else:
+        # Legacy CLI-args mode: --url is required
+        if not args.url:
+            print(f"{RED}ERROR:{RESET} either --config or --url is required")
+            return 2
+        sensor_sn      = args.test_sensor_sn
+        sensor_key     = args.test_sensor_key
+        sensor_name    = args.test_sensor_name
+        sensor_type    = args.test_sensor_type
+        packet_timeout = args.packet_timeout
+        skip_reboot    = args.skip_reboot
+
+    if sensor_sn and not sensor_key:
+        print(f"{RED}ERROR:{RESET} sensor key required when SN is set (CLI: --test-sensor-key, config: [test_sensor].key)")
         return 2
 
-    r = Runner(args.url, verbose=args.verbose)
+    # ---------------------------------------------------------------- resolve URL
+    # Pick a URL: (a) CLI --url wins, (b) [gateway].ip from config if reachable,
+    # (c) otherwise run provisioning (UART + WiFi switch) to discover one.
+    url: Optional[str] = args.url
+    if not url and cfg:
+        if cfg.ip:
+            candidate = f"http://{cfg.ip}"
+            info_(f"trying configured gateway IP: {candidate}")
+            if _http_alive(f"{candidate}/firmware/version"):
+                url = candidate
+            else:
+                info_(f"  not reachable — provisioning needed")
+        if not url:
+            try:
+                discovered = provision_gateway(cfg)
+                url = f"http://{discovered}"
+            except Exception as e:  # noqa: BLE001
+                print(f"\n{RED}ERROR during provisioning:{RESET} {e}")
+                return 2
 
-    # Sanity ping — fail fast with a clear message if device isn't reachable
+    if not url:
+        print(f"{RED}ERROR:{RESET} could not determine gateway URL")
+        return 2
+
+    r = Runner(url, verbose=args.verbose)
+
+    # Sanity ping
     try:
         resp = r.get("/firmware/version", timeout=3)
         body = resp.json()
         current_version = body.get("version", "unknown")
     except Exception as e:  # noqa: BLE001
-        print(f"{RED}ERROR:{RESET} cannot reach {args.url}/firmware/version  ({e})")
+        print(f"{RED}ERROR:{RESET} cannot reach {url}/firmware/version  ({e})")
         print("Is the device powered on and on the same network?")
         return 2
 
-    print(f"{BOLD}Testing gateway at {args.url}  (firmware v{current_version}){RESET}")
+    print(f"\n{BOLD}Testing gateway at {url}  (firmware v{current_version}){RESET}")
 
     section("Read-only smoke")
     r.run("firmware version JSON", lambda: t_firmware_version(r))
@@ -581,40 +1004,34 @@ def main():
     r.run("missing password param → 400", lambda: t_config_missing_params_rejected(r))
     r.run("SSID > 32 chars → 400", lambda: t_config_too_long_ssid_rejected(r))
 
-    if args.test_sensor_sn:
+    if sensor_sn:
         section(
-            f"Live sensor — packet round trip (SN {args.test_sensor_sn}, type "
-            f"{args.test_sensor_type}, timeout {args.packet_timeout}s)"
+            f"Live sensor — packet round trip (SN {sensor_sn}, type "
+            f"{sensor_type}, timeout {packet_timeout}s)"
         )
         r.run(
             "add or verify test sensor",
             lambda: t_add_or_verify_test_sensor(
-                r,
-                args.test_sensor_sn,
-                args.test_sensor_key,
-                args.test_sensor_name,
-                args.test_sensor_type,
+                r, sensor_sn, sensor_key, sensor_name, sensor_type,
             ),
         )
         r.run(
-            f"wait for fresh LoRa packet (up to {args.packet_timeout}s)",
-            lambda: t_wait_for_packet(r, args.test_sensor_sn, args.packet_timeout),
+            f"wait for fresh LoRa packet (up to {packet_timeout}s)",
+            lambda: t_wait_for_packet(r, sensor_sn, packet_timeout),
         )
         r.run(
             "decoded values are physically plausible",
-            lambda: t_validate_decoded_values(
-                r, args.test_sensor_sn, args.test_sensor_type
-            ),
+            lambda: t_validate_decoded_values(r, sensor_sn, sensor_type),
         )
         r.run(
             "sensor visible on /sensors page",
-            lambda: t_sensor_visible_in_sensors_page(r, args.test_sensor_sn),
+            lambda: t_sensor_visible_in_sensors_page(r, sensor_sn),
         )
     else:
-        info_("\nSkipping live sensor test (--test-sensor-sn not provided)")
+        info_("\nSkipping live sensor test (sensor SN not set in config or CLI)")
 
-    if args.skip_reboot:
-        info_("Skipping reboot test (--skip-reboot)")
+    if skip_reboot:
+        info_("Skipping reboot test (skip_reboot=true)")
     else:
         section("Reboot recovery")
         r.run("device reboots and returns", lambda: t_reboot_round_trip(r, current_version))
