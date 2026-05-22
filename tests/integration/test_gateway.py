@@ -210,12 +210,32 @@ class SerialMonitor:
 
     def start(self):
         self._ser = serial.Serial(self.port, self.baud, timeout=0.5)
-        # Give a moment for the OS to settle after open (some boards reset
-        # on serial open thanks to DTR/RTS)
-        time.sleep(0.2)
+        # Start reader FIRST — we want to catch the boot output that comes
+        # next, whether triggered by opening the port (DTR pulse from the
+        # OS) or by our explicit pulse_reset(). Any sleep here means we'd
+        # lose those early lines.
         self._thread = threading.Thread(target=self._reader, daemon=True)
         self._thread.start()
         info_(f"  serial monitor opened on {self.port} @ {self.baud}")
+
+    def pulse_reset(self):
+        """Pulse RTS to force a clean reset via the standard ESP32 auto-reset
+        wiring (RTS → EN through a transistor). This guarantees we catch the
+        boot output from the very first line, instead of joining mid-boot.
+
+        No-op if DTR/RTS aren't accessible on this serial driver."""
+        if not self._ser:
+            return
+        try:
+            # Hold reset
+            self._ser.rts = True   # EN low (reset asserted on standard wiring)
+            self._ser.dtr = False  # IO0 high (normal boot, not bootloader)
+            time.sleep(0.1)
+            # Release reset — device boots and starts printing
+            self._ser.rts = False
+            info_("  pulsed reset via RTS")
+        except Exception as e:
+            info_(f"  could not pulse RTS: {e}")
 
     def stop(self):
         self._stop_event.set()
@@ -377,11 +397,85 @@ def flash_device(env: str, rebuild: bool, erase: bool) -> None:
 
 # =================================================================== provisioning
 
-# Regex patterns matching the firmware's serial log
+# Regex patterns matching the firmware's serial log. We try several places
+# the SSID can show up because exact timing relative to when we start
+# reading is fragile — whichever line we catch first wins.
 RE_BOOT_BANNER = r"expLORA Gateway Lite starting up"
-RE_AP_STARTED  = r"AP started with SSID: (\S+)"
-RE_TEMP_AP     = r"Temporary AP started with SSID: (\S+)"
 RE_STA_IP      = r"WiFi connected[^!]*! IP: (\d+\.\d+\.\d+\.\d+)"
+
+# Each of these has the SSID as the first capture group. Order matters
+# only for diagnostic logging — any match is good.
+AP_PATTERNS = (
+    (r"AP started with SSID: (\S+?)[,\s]",            "main.cpp AP-only"),
+    (r"Temporary AP started with SSID: (\S+?)[,\s]",  "main.cpp AP+STA"),
+    (r"Starting AP mode: (\S+)",                      "WebPortal::setupAP entry"),
+    (r"Setting up AP: (\S+)",                         "WebPortal::setupAP middle"),
+    (r"AP brought up additively: (\S+?) @",           "WebPortal::ensureAPUp"),
+)
+
+
+def _strip_ssid(s: str) -> str:
+    """Remove trailing punctuation we might have grabbed via (\\S+)."""
+    return s.rstrip(",.;: ")
+
+
+def scan_wifi_for_ap_macos(prefix: str, timeout: float = 30) -> Optional[str]:
+    """Use system_profiler to look for a visible WiFi network whose SSID
+    starts with `prefix`. Works without sudo, but the list is only as fresh
+    as the most recent macOS WiFi scan — so we retry a few times.
+    """
+    deadline = time.time() + timeout
+    pattern = re.compile(rf"\b{re.escape(prefix)}[A-Fa-f0-9]+\b")
+    info_(f"  scanning visible WiFi networks for prefix {prefix!r} (up to {int(timeout)}s)")
+    while time.time() < deadline:
+        try:
+            out = subprocess.check_output(
+                ["system_profiler", "SPAirPortDataType"],
+                text=True, timeout=15,
+            )
+            m = pattern.search(out)
+            if m:
+                return m.group(0)
+        except subprocess.SubprocessError:
+            pass
+        time.sleep(3)
+    return None
+
+
+def discover_ap_ssid(monitor: SerialMonitor, prefix: str, timeout: float = 20) -> Optional[str]:
+    """Try, in order: serial log scrape, macOS WiFi scan, give up.
+
+    `monitor` may be partway through the device's boot output — we accept
+    any of several known log lines that carry the SSID. If serial yields
+    nothing within `timeout`, fall back to the system-level WiFi scan.
+    """
+    info_(f"  reading serial for AP SSID announcement (up to {int(timeout)}s) …")
+    combined = "|".join(f"(?:{p})" for p, _ in AP_PATTERNS)
+    m = monitor.wait_for(combined, timeout=timeout)
+    if m:
+        # Find which group actually matched (the first non-None capture)
+        for grp in m.groups():
+            if grp:
+                ssid = _strip_ssid(grp)
+                info_(f"  serial says AP SSID = {ssid!r}")
+                return ssid
+
+    info_("  serial log didn't surface the SSID — falling back to WiFi scan")
+    if platform.system() == "Darwin":
+        ssid = scan_wifi_for_ap_macos(prefix)
+        if ssid:
+            info_(f"  WiFi scan found {ssid!r}")
+            return ssid
+
+    # Last resort: ask the user
+    print(f"\n  {YELLOW}>>{RESET} Could not auto-discover the gateway AP SSID.")
+    print(f"     Open WiFi list, look for a network starting with {BOLD}{prefix}{RESET},")
+    print(f"     and paste the full name here (or press ENTER to abort):")
+    try:
+        line = input("     SSID: ").strip()
+    except EOFError:
+        line = ""
+    return line or None
 
 
 def _http_alive(url: str, timeout: float = 3.0) -> bool:
@@ -396,14 +490,15 @@ def provision_gateway(cfg: Config) -> str:
     """Walk the device through STA provisioning. Returns the discovered IP.
 
     Flow:
-        1. Open serial monitor (autodetected or configured port)
-        2. Watch UART for "AP started" — extract the actual AP SSID
+        1. Open serial monitor + pulse RTS for a clean reset
+        2. Discover AP SSID — serial regex first, macOS WiFi scan
+           fallback, user prompt as last resort
         3. Switch the host WiFi to that AP (macOS auto, prompt elsewhere)
         4. Verify we can reach 192.168.4.1
         5. POST /config with the home WiFi credentials
-        6. Wait for the post-reboot banner, then for "WiFi connected! IP: ..."
-        7. Switch host WiFi back to home
-        8. Return discovered IP
+        6. Wait for the post-reboot banner …
+        7. … then for "WiFi connected! IP: x.x.x.x"
+        8. Switch host WiFi back to home, confirm reachability, return IP
     """
     print(f"\n{BOLD}{CYAN}== Provisioning gateway =={RESET}")
 
@@ -417,25 +512,28 @@ def provision_gateway(cfg: Config) -> str:
     monitor = SerialMonitor(port, baud=cfg.serial_baud, echo=True)
     monitor.start()
     try:
-        # 1. Discover the AP SSID from the boot log. The board may already
-        # be running; we tolerate that and fall back to ap_ssid_prefix if
-        # no banner shows up within 5 s.
-        info_("  waiting up to 5 s for an AP-started log line …")
-        m = monitor.wait_for(f"({RE_TEMP_AP}|{RE_AP_STARTED})", timeout=5)
-        if m:
-            ap_ssid = m.group(2) or m.group(3)
-            info_(f"  discovered AP SSID: {ap_ssid}")
-        else:
-            # Last-ditch: take any expLORA-GW- prefix mac the user wrote
-            ap_ssid = cfg.ap_ssid_prefix
-            info_(f"  no AP log line — falling back to prefix: {ap_ssid!r}")
-            info_(f"  {YELLOW}you may need to wait until the device finishes booting{RESET}")
+        # 1. Trigger a clean reset so we know we're catching the boot
+        # output from line one (not mid-way through it). On boards without
+        # standard auto-reset wiring this is a no-op.
+        monitor.pulse_reset()
 
-        # 2. Switch host WiFi to the gateway AP
+        # 2. Discover the gateway's AP SSID. Tries serial log first, then
+        # macOS WiFi scan, then prompts the user. Refuses to continue if
+        # all three fail.
+        ap_ssid = discover_ap_ssid(monitor, prefix=cfg.ap_ssid_prefix, timeout=20)
+        if not ap_ssid:
+            raise RuntimeError(
+                "could not determine gateway AP SSID — aborting. Tip: leave "
+                "the device powered on for 30+ s after flash so its AP shows "
+                "up in macOS' WiFi list."
+            )
+        info_(f"  using AP SSID: {ap_ssid}")
+
+        # 3. Switch host WiFi to the gateway AP
         if not wifi_switch(cfg.wifi_interface, ap_ssid):
             raise RuntimeError(f"failed to switch WiFi to {ap_ssid!r}")
 
-        # 3. Confirm the AP is reachable
+        # 4. Confirm the AP is reachable
         if not _http_alive("http://192.168.4.1/firmware/version"):
             raise RuntimeError(
                 "WiFi switched but http://192.168.4.1 unreachable — is the "
@@ -443,7 +541,7 @@ def provision_gateway(cfg: Config) -> str:
             )
         info_("  gateway AP confirmed reachable at 192.168.4.1")
 
-        # 4. POST credentials. Don't worry about response — device reboots
+        # 5. POST credentials. Don't worry about response — device reboots
         # ~1.5 s later (handleClient deferred restart) so the response may
         # not finish cleanly.
         info_("  POSTing /config (WiFi creds)")
@@ -461,7 +559,7 @@ def provision_gateway(cfg: Config) -> str:
         except requests.exceptions.RequestException as e:
             info_(f"  /config POST raised {e} — device is probably already restarting")
 
-        # 5. Wait for the post-reboot banner (= confirms restart) and then
+        # 6. Wait for the post-reboot banner (= confirms restart) and then
         # for the STA-connected line carrying the new IP
         m = monitor.wait_for(RE_BOOT_BANNER, timeout=15, label="post-reboot banner")
         if not m:
@@ -476,7 +574,7 @@ def provision_gateway(cfg: Config) -> str:
         new_ip = m.group(1)
         print(f"  {GREEN}✓ gateway is now on the home network at {BOLD}{new_ip}{RESET}")
 
-        # 6. Switch host back to home WiFi
+        # 7. Switch host back to home WiFi
         info_("\n  switching host WiFi back to home network …")
         if cfg.home_password:
             wifi_switch(cfg.wifi_interface, cfg.home_ssid, cfg.home_password)
@@ -484,7 +582,7 @@ def provision_gateway(cfg: Config) -> str:
             # Even for open home networks, the user just specified the SSID
             wifi_switch(cfg.wifi_interface, cfg.home_ssid)
 
-        # 7. Confirm we can reach the device on the home network
+        # 8. Confirm we can reach the device on the home network
         info_("  confirming gateway is reachable from host …")
         ok_deadline = time.time() + 15
         while time.time() < ok_deadline:
