@@ -753,15 +753,28 @@ def t_api_csv(r: Runner) -> str:
     return f"{len(lines)} line(s)"
 
 
-def t_sensors_page(r: Runner) -> str:
+def t_sensors_page_empty(r: Runner) -> str:
+    """When no sensors are configured the table doesn't render; we only get
+    the heading and an empty-state message. Used when the live-sensor flow
+    is disabled."""
     resp = r.get("/sensors")
     assert_status(resp, [200])
     html = resp.text
     assert_in("Configured Sensors", html, "sensors page heading")
-    # Health columns added in 1.1.11 — regression guard
+    assert_in("No sensors", html, "empty-state message")
+    return "OK (empty state)"
+
+
+def t_sensors_page_with_columns(r: Runner) -> str:
+    """When at least one sensor exists the table renders, and the new
+    health columns must be present (regression guard for 1.1.11)."""
+    resp = r.get("/sensors")
+    assert_status(resp, [200])
+    html = resp.text
+    assert_in("Configured Sensors", html, "sensors page heading")
     assert_in("Status", html, "Status column header (added in 1.1.11)")
-    assert_in("24h", html, "24h column header (added in 1.1.11)")
-    return "OK + has new health columns"
+    assert_in("24h",    html, "24h column header (added in 1.1.11)")
+    return "OK + has health columns"
 
 
 def t_config_page(r: Runner) -> str:
@@ -999,6 +1012,23 @@ def t_sensor_visible_in_sensors_page(r: Runner, sn: str) -> str:
     return f"SN {sn_upper} visible on /sensors page"
 
 
+def t_sensor_health_badge_after_packet(r: Runner, sn: str) -> str:
+    """After a successful packet, /sensors must render the Healthy badge for
+    this sensor and the 24h column must show at least one OK count. This is
+    the end-to-end signal that the 1.1.11 health-tracking pipeline is
+    actually firing (recordSensorSuccess → render in HTML)."""
+    resp = r.get("/sensors")
+    assert_status(resp, [200])
+    html = resp.text
+    # The badge HTML looks like `>Healthy</span>` regardless of inline
+    # styling — that substring is unique to renderHealthBadge()'s output.
+    if ">Healthy</span>" not in html:
+        raise TestFailed(
+            "no 'Healthy' badge on /sensors — recordSensorSuccess didn't fire?"
+        )
+    return "Healthy badge present in HTML"
+
+
 # --------------------------------------------------------------- reboot
 
 def t_reboot_round_trip(r: Runner, current_version: str) -> str:
@@ -1217,11 +1247,28 @@ def main():
 
     print(f"\n{BOLD}Testing gateway at {url}  (firmware v{current_version}){RESET}")
 
+    # ----------------------------------------------- Phase 1: setup (mutates)
+    # Adding the sensor first means downstream smoke tests see the table
+    # rendered (so they can assert the new health columns are present), and
+    # the live-sensor phase can immediately start polling /api for packets.
+    if sensor_sn:
+        section("Setup")
+        r.run(
+            "add or verify test sensor",
+            lambda: t_add_or_verify_test_sensor(
+                r, sensor_sn, sensor_key, sensor_name, sensor_type,
+            ),
+        )
+
+    # ----------------------------------------------- Phase 2: read-only smoke
     section("Read-only smoke")
     r.run("firmware version JSON", lambda: t_firmware_version(r))
     r.run("/api?format=json shape", lambda: t_api_json(r))
     r.run("/api?format=csv basics", lambda: t_api_csv(r))
-    r.run("/sensors page (has new health columns)", lambda: t_sensors_page(r))
+    if sensor_sn:
+        r.run("/sensors page (has health columns)", lambda: t_sensors_page_with_columns(r))
+    else:
+        r.run("/sensors page (empty state)", lambda: t_sensors_page_empty(r))
     r.run("/config form", lambda: t_config_page(r))
     r.run("/ (root)", lambda: t_root(r))
     r.run("/diag/heap", lambda: t_diag_heap(r))
@@ -1229,22 +1276,18 @@ def main():
     r.run("unknown URL → 404", lambda: t_unknown_url_returns_404(r))
     r.run("/api with unknown sensor", lambda: t_api_unknown_sensor(r))
 
+    # ----------------------------------------------- Phase 3: POST validation
     section("POST validation (added in 1.1.6)")
     r.run("empty SSID → 400", lambda: t_config_empty_ssid_rejected(r))
     r.run("password < 8 chars → 400", lambda: t_config_short_password_rejected(r))
     r.run("missing password param → 400", lambda: t_config_missing_params_rejected(r))
     r.run("SSID > 32 chars → 400", lambda: t_config_too_long_ssid_rejected(r))
 
+    # ----------------------------------------------- Phase 4: live sensor wait
     if sensor_sn:
         section(
-            f"Live sensor — packet round trip (SN {sensor_sn}, type "
+            f"Live sensor — wait + validate (SN {sensor_sn}, type "
             f"{sensor_type}, timeout {packet_timeout}s)"
-        )
-        r.run(
-            "add or verify test sensor",
-            lambda: t_add_or_verify_test_sensor(
-                r, sensor_sn, sensor_key, sensor_name, sensor_type,
-            ),
         )
         r.run(
             f"wait for fresh LoRa packet (up to {packet_timeout}s)",
@@ -1257,6 +1300,10 @@ def main():
         r.run(
             "sensor visible on /sensors page",
             lambda: t_sensor_visible_in_sensors_page(r, sensor_sn),
+        )
+        r.run(
+            "/sensors page shows Healthy badge after packet",
+            lambda: t_sensor_health_badge_after_packet(r, sensor_sn),
         )
     else:
         info_("\nSkipping live sensor test (sensor SN not set in config or CLI)")
