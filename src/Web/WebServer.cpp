@@ -24,7 +24,12 @@
 #include <WiFi.h>
 #include <AsyncJson.h>
 #include <ArduinoJson.h>
+#include <esp_ota_ops.h>
+#include <esp_task_wdt.h>
+#include <esp_heap_caps.h>
 #include <LittleFS.h>
+#include <HTTPClient.h>
+#include <Update.h>
 #include "../config.h"
 
 // Constructor
@@ -56,13 +61,8 @@ bool WebPortal::init()
 {
     logger.info("Initializing web portal");
 
-    // Create AP name (if needed)
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
-
-    String macAddress = WiFi.macAddress();
-    macAddress.replace(":", "");                      // Remove colons
-    apName = "expLORA-GW-" + macAddress.substring(6); // Use last 6 characters of MAC address
+    // Derive the same AP name used at boot (see makeApName() in config.h)
+    apName = makeApName();
 
     // Set mode based on current configuration
     isAPMode = configMode || (WiFi.status() != WL_CONNECTED);
@@ -72,15 +72,17 @@ bool WebPortal::init()
         setupAP();
     }
 
-    // Setup routes
+    // Setup routes (idempotent)
     setupRoutes();
 
-    // Start server
-    server.begin();
-    logger.info("Web server started on port " + String(HTTP_PORT));
+    // Start server once
+    if (!serverStarted)
+    {
+        server.begin();
+        serverStarted = true;
+        logger.info("Web server started on port " + String(HTTP_PORT));
+    }
 
-    otaServer = new OTAServer(logger, server);
-    otaServer->init();
 
     // Create task on core 0 for DNS and other processing
     // xTaskCreatePinnedToCore(
@@ -115,8 +117,8 @@ void WebPortal::setupAP()
     WiFi.mode(WIFI_AP);
     logger.info("Setting up AP: " + apName);
 
-    // AP configuration with 4 clients max and channel 6 (less crowded usually)
-    bool apStarted = WiFi.softAP(apName.c_str());
+    // AP configuration: channel 6 (less crowded usually), max 4 clients
+    bool apStarted = WiFi.softAP(apName.c_str(), nullptr, 6, 0, 4);
     delay(1000); // Give AP time to fully initialize
 
     if (apStarted)
@@ -143,69 +145,72 @@ void WebPortal::setupAP()
 // Modify WebPortal::setupRoutes() in WebServer.cpp
 void WebPortal::setupRoutes()
 {
-    logger.info("Setting up web server routes");
-
-    // In AP mode, we only want to show WiFi configuration
-    if (isAPMode)
+    if (routesRegistered)
     {
-        // Basic pages for AP mode only
-        server.on("/", HTTP_GET, std::bind(&WebPortal::handleConfig, this, std::placeholders::_1));
-        logger.debug("Route registered: GET / (redirects to config in AP mode)");
-
-        server.on("/config", HTTP_GET, std::bind(&WebPortal::handleConfig, this, std::placeholders::_1));
-        logger.debug("Route registered: GET /config");
-
-        server.on("/config", HTTP_POST, std::bind(&WebPortal::handleConfigPost, this, std::placeholders::_1));
-        logger.debug("Route registered: POST /config");
-    }
-    else
-    {
-        // Full set of routes for client mode
-        server.on("/", HTTP_GET, std::bind(&WebPortal::handleRoot, this, std::placeholders::_1));
-        logger.debug("Route registered: GET /");
-
-        server.on("/config", HTTP_GET, std::bind(&WebPortal::handleConfig, this, std::placeholders::_1));
-        server.on("/config", HTTP_POST, std::bind(&WebPortal::handleConfigPost, this, std::placeholders::_1));
-
-        // Sensor management
-        server.on("/sensors/add", HTTP_GET, std::bind(&WebPortal::handleSensorAdd, this, std::placeholders::_1));
-        server.on("/sensors/add", HTTP_POST, std::bind(&WebPortal::handleSensorAddPost, this, std::placeholders::_1));
-        server.on("/sensors/edit", HTTP_GET, std::bind(&WebPortal::handleSensorEdit, this, std::placeholders::_1));
-        server.on("/sensors/update", HTTP_POST, std::bind(&WebPortal::handleSensorEditPost, this, std::placeholders::_1));
-        server.on("/sensors/delete", HTTP_GET, std::bind(&WebPortal::handleSensorDelete, this, std::placeholders::_1));
-        server.on("/sensors", HTTP_GET, std::bind(&WebPortal::handleSensors, this, std::placeholders::_1));
-
-        // Logs
-        server.on("/logs/clear", HTTP_GET, std::bind(&WebPortal::handleLogsClear, this, std::placeholders::_1));
-        server.on("/logs/level", HTTP_POST, std::bind(&WebPortal::handleLogLevel, this, std::placeholders::_1));
-        server.on("/logs", HTTP_GET, std::bind(&WebPortal::handleLogs, this, std::placeholders::_1));
-
-        // MQTT
-        server.on("/mqtt", HTTP_GET, std::bind(&WebPortal::handleMqtt, this, std::placeholders::_1));
-        server.on("/mqtt", HTTP_POST, std::bind(&WebPortal::handleMqttPost, this, std::placeholders::_1));
-
-        // API
-        server.on("/api", HTTP_GET, std::bind(&WebPortal::handleAPI, this, std::placeholders::_1));
-
-        // Reboot
-        server.on("/reboot", HTTP_GET, std::bind(&WebPortal::handleReboot, this, std::placeholders::_1));
+        return;
     }
 
-    // Unknown pages (404) - needed in both modes
+    logger.info("Registering web server routes (once)");
+
+    server.on("/", HTTP_GET, std::bind(&WebPortal::handleRoot, this, std::placeholders::_1));
+    server.on("/config", HTTP_GET, std::bind(&WebPortal::handleConfig, this, std::placeholders::_1));
+    server.on("/config", HTTP_POST, std::bind(&WebPortal::handleConfigPost, this, std::placeholders::_1));
+
+    // Sensor management
+    server.on("/sensors/add", HTTP_GET, std::bind(&WebPortal::handleSensorAdd, this, std::placeholders::_1));
+    server.on("/sensors/add", HTTP_POST, std::bind(&WebPortal::handleSensorAddPost, this, std::placeholders::_1));
+    server.on("/sensors/edit", HTTP_GET, std::bind(&WebPortal::handleSensorEdit, this, std::placeholders::_1));
+    server.on("/sensors/update", HTTP_POST, std::bind(&WebPortal::handleSensorEditPost, this, std::placeholders::_1));
+    server.on("/sensors/delete", HTTP_GET, std::bind(&WebPortal::handleSensorDelete, this, std::placeholders::_1));
+    server.on("/sensors", HTTP_GET, std::bind(&WebPortal::handleSensors, this, std::placeholders::_1));
+
+    // Logs
+    server.on("/logs/clear", HTTP_GET, std::bind(&WebPortal::handleLogsClear, this, std::placeholders::_1));
+    server.on("/logs/level", HTTP_POST, std::bind(&WebPortal::handleLogLevel, this, std::placeholders::_1));
+    server.on("/logs", HTTP_GET, std::bind(&WebPortal::handleLogs, this, std::placeholders::_1));
+
+    // MQTT
+    server.on("/mqtt", HTTP_GET, std::bind(&WebPortal::handleMqtt, this, std::placeholders::_1));
+    server.on("/mqtt", HTTP_POST, std::bind(&WebPortal::handleMqttPost, this, std::placeholders::_1));
+
+    // API
+    server.on("/api", HTTP_GET, std::bind(&WebPortal::handleAPI, this, std::placeholders::_1));
+
+    // Diagnostics
+    server.on("/diag/heap", HTTP_GET, std::bind(&WebPortal::handleDiagHeap, this, std::placeholders::_1));
+
+    // Firmware update endpoints
+    server.on("/firmware/version", HTTP_GET, std::bind(&WebPortal::handleFirmwareVersion, this, std::placeholders::_1));
+    server.on("/firmware/check", HTTP_GET, std::bind(&WebPortal::handleFirmwareCheck, this, std::placeholders::_1));
+    server.on("/firmware/update", HTTP_POST, std::bind(&WebPortal::handleFirmwareUpdate, this, std::placeholders::_1));
+    server.on("/firmware", HTTP_GET, std::bind(&WebPortal::handleFirmwarePage, this, std::placeholders::_1));
+    server.on("/firmware", HTTP_POST,
+        [this](AsyncWebServerRequest *request) { this->handleFirmwareUploadComplete(request); },
+        [this](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+            this->handleFirmwareUploadChunk(request, filename, index, data, len, final);
+        }
+    );
+
+    // Reboot
+    server.on("/reboot", HTTP_GET, std::bind(&WebPortal::handleReboot, this, std::placeholders::_1));
+
+    // Unknown pages (404)
     server.onNotFound(std::bind(&WebPortal::handleNotFound, this, std::placeholders::_1));
-    logger.debug("Route registered: 404 handler");
 
-    logger.info("All routes registered successfully");
+    routesRegistered = true;
+    logger.info("Routes registered");
 }
 
-// Modify the handleClient method to avoid duplicate processing
+// Called from the main loop. Drives deferred restarts so handlers can safely
+// schedule ESP.restart() without blocking the async response flush.
 void WebPortal::handleClient()
 {
-    // No need to do anything here since the task handles it
-    // We keep this method for compatibility
-
-    // This will handle auto-reboot after OTA process
-    otaServer->process();
+    if (restartRequested && (long)(millis() - restartAt) >= 0)
+    {
+        logger.info("Deferred restart firing now");
+        delay(50); // tiny window for any in-flight TCP to drain
+        ESP.restart();
+    }
 }
 
 // Ensure proper cleanup in the destructor
@@ -227,7 +232,53 @@ void WebPortal::processDNS()
     // called automatically in handleClient()
 }
 
-// Switch between AP and client modes
+// Bring the AP up additively. Safe to call while STA is connected or trying
+// to connect — does NOT tear down WiFi the way setupAP() does. Idempotent.
+void WebPortal::ensureAPUp()
+{
+    wifi_mode_t curMode = WiFi.getMode();
+    bool needsApStart = false;
+
+    if (curMode == WIFI_OFF)
+    {
+        WiFi.mode(WIFI_AP);
+        needsApStart = true;
+    }
+    else if (curMode == WIFI_STA)
+    {
+        // Add AP capability without dropping STA
+        WiFi.mode(WIFI_AP_STA);
+        needsApStart = true;
+    }
+    else
+    {
+        // WIFI_AP or WIFI_AP_STA: AP capability present, but the AP may have
+        // been stopped (e.g. after WIFI_OFF + mode flip). softAPIP() returns
+        // 0.0.0.0 when the AP is not actually started.
+        if (WiFi.softAPIP() == IPAddress(0, 0, 0, 0))
+        {
+            needsApStart = true;
+        }
+    }
+
+    if (needsApStart)
+    {
+        WiFi.setTxPower(WIFI_POWER_19_5dBm);
+        bool ok = WiFi.softAP(apName.c_str(), nullptr, 6, 0, 4);
+        delay(100);
+        if (ok)
+        {
+            logger.info("AP brought up additively: " + apName + " @ " + WiFi.softAPIP().toString());
+        }
+        else
+        {
+            logger.error("Failed to start AP additively: " + apName);
+        }
+    }
+}
+
+// Toggle the captive-portal UI/DNS layer. STA is intentionally left alone so
+// the auto-reconnect path keeps working during transient outages.
 void WebPortal::setAPMode(bool enable)
 {
     if (enable == isAPMode)
@@ -237,12 +288,25 @@ void WebPortal::setAPMode(bool enable)
 
     if (enable)
     {
-        // Switch to AP mode
-        setupAP();
+        ensureAPUp();
+
+        IPAddress apIP = WiFi.softAPIP();
+        if (apIP != IPAddress(0, 0, 0, 0))
+        {
+            dnsServer.setTTL(30);
+            dnsServer.start(DNS_PORT, "*", apIP);
+            logger.info("DNS server (re)started on port " + String(DNS_PORT));
+        }
+        else
+        {
+            logger.warning("setAPMode(true): AP IP is 0.0.0.0, DNS not started");
+        }
+        isAPMode = true;
     }
     else
     {
-        // Switch to client mode
+        // Stop captive portal DNS but leave the AP hardware alone. The actual
+        // teardown of the AP radio is handled by main.cpp (AP_TIMEOUT path).
         dnsServer.stop();
         isAPMode = false;
     }
@@ -258,6 +322,7 @@ bool WebPortal::isInAPMode() const
 void WebPortal::restart()
 {
     server.end();
+    serverStarted = false;
 
     // Reset DNS server if it was running
     if (isAPMode)
@@ -293,6 +358,17 @@ void WebPortal::handleRoot(AsyncWebServerRequest *request)
     request->send(200, "text/html", html);
 }
 
+// Guard: if AP mode, redirect to /config
+bool WebPortal::guardAPOnly(AsyncWebServerRequest *request)
+{
+    if (isAPMode)
+    {
+        request->redirect("/config");
+        return true;
+    }
+    return false;
+}
+
 // WiFi configuration page
 void WebPortal::handleConfig(AsyncWebServerRequest *request)
 {
@@ -300,8 +376,8 @@ void WebPortal::handleConfig(AsyncWebServerRequest *request)
 
     String currentIP = isAPMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
 
-    // Generate HTML
-    String html = HTMLGenerator::generateConfigPage(wifiSSID, wifiPassword, configMode, currentIP, timezone);
+    // Generate HTML (use isAPMode to drive UI state)
+    String html = HTMLGenerator::generateConfigPage(wifiSSID, wifiPassword, isAPMode, currentIP, timezone);
 
     // Send response
     request->send(200, "text/html", html);
@@ -312,71 +388,93 @@ void WebPortal::handleConfigPost(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /config");
 
-    if (request->hasParam("ssid", true) && request->hasParam("password", true))
+    if (!request->hasParam("ssid", true) || !request->hasParam("password", true))
     {
-        wifiSSID = request->getParam("ssid", true)->value();
-        wifiPassword = request->getParam("password", true)->value();
-
-        // Get timezone if present
-        if (request->hasParam("timezone", true))
-        {
-            String newTimezone = request->getParam("timezone", true)->value();
-            timezone = newTimezone;
-        }
-
-        logger.info("New WiFi configuration - SSID: " + wifiSSID);
-
-        // IMPORTANT: Make sure to save both to ConfigManager and to Preferences
-        // This ensures config persists across reboots
-        configMode = false;
-
-        // Since you have direct reference to these variables, you need to save them
-        // to persistent storage before restarting
-        // Add this code that explicitly saves to both file system and preferences
-
-        // Save to HTML response
-        String html = "<!DOCTYPE html><html><head>";
-        html += "<meta http-equiv='refresh' content='10;url=/'>";
-        html += "<title>Configuration Saved</title></head>";
-        html += "<body><h1>Configuration Saved</h1>";
-        html += "<p>New WiFi settings have been saved. The device will restart in a few seconds.</p>";
-        html += "</body></html>";
-
-        request->send(200, "text/html", html);
-
-        // Make sure configMode is saved as FALSE
-        // This is critical to ensure it doesn't start in AP mode after restart
-        File file = LittleFS.open(CONFIG_FILE, "w");
-        if (file)
-        {
-            DynamicJsonDocument doc(512);
-            doc["ssid"] = wifiSSID;
-            doc["password"] = wifiPassword;
-            doc["configMode"] = false; // Explicitly set to false
-            doc["timezone"] = timezone;
-            serializeJson(doc, file);
-            file.close();
-            logger.info("Configuration saved to file system");
-        }
-
-        // Restart ESP32 after 1 second
-        delay(1000);
-        ESP.restart();
-    }
-    else
-    {
-        // Missing parameters
         request->send(400, "text/plain", "Missing parameters");
+        return;
     }
+
+    String newSsid = request->getParam("ssid", true)->value();
+    newSsid.trim();
+    String newPassword = request->getParam("password", true)->value();
+
+    // Validate SSID: 1..32 chars (IEEE 802.11 limit)
+    if (newSsid.length() == 0)
+    {
+        request->send(400, "text/plain", "SSID cannot be empty");
+        return;
+    }
+    if (newSsid.length() > 32)
+    {
+        request->send(400, "text/plain", "SSID too long (max 32 characters)");
+        return;
+    }
+    // Validate password: either empty (open network) or 8..63 chars (WPA2-PSK)
+    if (newPassword.length() > 0 && newPassword.length() < 8)
+    {
+        request->send(400, "text/plain", "Password must be at least 8 characters or left empty for open networks");
+        return;
+    }
+    if (newPassword.length() > 63)
+    {
+        request->send(400, "text/plain", "Password too long (max 63 characters)");
+        return;
+    }
+
+    wifiSSID = newSsid;
+    wifiPassword = newPassword;
+
+    if (request->hasParam("timezone", true))
+    {
+        timezone = request->getParam("timezone", true)->value();
+    }
+
+    logger.info("New WiFi configuration - SSID: " + wifiSSID);
+    configMode = false;
+
+    // Persist to file system BEFORE responding, so a power loss between send
+    // and restart still leaves valid config on disk.
+    File file = LittleFS.open(CONFIG_FILE, "w");
+    if (!file)
+    {
+        logger.error("Failed to open config file for write");
+        request->send(500, "text/plain", "Failed to save configuration");
+        return;
+    }
+    DynamicJsonDocument doc(512);
+    doc["ssid"] = wifiSSID;
+    doc["password"] = wifiPassword;
+    doc["configMode"] = false; // Explicitly set to false
+    doc["timezone"] = timezone;
+    serializeJson(doc, file);
+    file.close();
+    logger.info("Configuration saved to file system");
+
+    // Build confirmation page
+    String html = "<!DOCTYPE html><html><head>";
+    html += "<meta http-equiv='refresh' content='10;url=/'>";
+    html += "<title>Configuration Saved</title></head>";
+    html += "<body><h1>Configuration Saved</h1>";
+    html += "<p>New WiFi settings have been saved. The device will restart in a few seconds.</p>";
+    html += "</body></html>";
+
+    request->send(200, "text/html", html);
+
+    // Defer the restart so the async server can finish flushing the response.
+    // handleClient() (called from the main loop) will trigger ESP.restart()
+    // once restartAt has been reached.
+    restartAt = millis() + 1500;
+    restartRequested = true;
 }
 
 // Sensors list page
 void WebPortal::handleSensors(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /sensors");
+    if (guardAPOnly(request)) return;
 
     // Get list of sensors
-    std::vector<SensorData> sensorsList = sensorManager.getActiveSensors();
+    std::vector<ActiveSensorEntry> sensorsList = sensorManager.getActiveSensorEntries();
 
     // Generate HTML
     String html = HTMLGenerator::generateSensorsPage(sensorsList);
@@ -389,6 +487,7 @@ void WebPortal::handleSensors(AsyncWebServerRequest *request)
 void WebPortal::handleSensorAdd(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /sensors/add");
+    if (guardAPOnly(request)) return;
 
     // Generate HTML
     String html = HTMLGenerator::generateSensorAddPage();
@@ -401,6 +500,7 @@ void WebPortal::handleSensorAdd(AsyncWebServerRequest *request)
 void WebPortal::handleSensorAddPost(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /sensors/add");
+    if (guardAPOnly(request)) return;
 
     // Check parameters
     if (request->hasParam("name", true) &&
@@ -527,6 +627,7 @@ void WebPortal::handleSensorAddPost(AsyncWebServerRequest *request)
 void WebPortal::handleSensorEdit(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /sensors/edit");
+    if (guardAPOnly(request)) return;
 
     // Check index parameter
     if (request->hasParam("index"))
@@ -555,6 +656,7 @@ void WebPortal::handleSensorEdit(AsyncWebServerRequest *request)
 void WebPortal::handleSensorEditPost(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /sensors/update");
+    if (guardAPOnly(request)) return;
 
     // Check parameters
     if (request->hasParam("index", true) &&
@@ -666,6 +768,7 @@ void WebPortal::handleSensorEditPost(AsyncWebServerRequest *request)
 void WebPortal::handleSensorDelete(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /sensors/delete");
+    if (guardAPOnly(request)) return;
 
     // Check index parameter
     if (request->hasParam("index"))
@@ -685,7 +788,7 @@ void WebPortal::handleSensorDelete(AsyncWebServerRequest *request)
 
             if (success)
             {
-                logger.info("Deleted sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+                logger.info("Deleted sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
 
                 // If MQTT is enabled, remove discovery message
                 if (mqttManager && mqttManager->isConnected())
@@ -713,6 +816,7 @@ void WebPortal::handleSensorDelete(AsyncWebServerRequest *request)
 void WebPortal::handleLogs(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /logs");
+    if (guardAPOnly(request)) return;
 
     // Get logs
     size_t logCount = 0;
@@ -729,6 +833,7 @@ void WebPortal::handleLogs(AsyncWebServerRequest *request)
 void WebPortal::handleLogsClear(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /logs/clear");
+    if (guardAPOnly(request)) return;
 
     // Clear logs
     logger.clearLogs();
@@ -744,6 +849,7 @@ void WebPortal::handleLogsClear(AsyncWebServerRequest *request)
 void WebPortal::handleLogLevel(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /logs/level");
+    if (guardAPOnly(request)) return;
 
     // Check level parameter
     if (request->hasParam("level", true))
@@ -763,6 +869,7 @@ void WebPortal::handleLogLevel(AsyncWebServerRequest *request)
 void WebPortal::handleMqtt(AsyncWebServerRequest *request)
 {
     // logger.debug("HTTP request: GET /mqtt");
+    if (guardAPOnly(request)) return;
 
     // Get MQTT configuration from ConfigManager
     // ConfigManager* configManager = (ConfigManager*)request->getParam("configManager")->value().toInt();
@@ -789,6 +896,7 @@ void WebPortal::handleMqtt(AsyncWebServerRequest *request)
 void WebPortal::handleMqttPost(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: POST /mqtt");
+    if (guardAPOnly(request)) return;
 
     // Check parameters
     if (request->hasParam("host", true) &&
@@ -840,6 +948,7 @@ void WebPortal::handleMqttPost(AsyncWebServerRequest *request)
 void WebPortal::handleAPI(AsyncWebServerRequest *request)
 {
     logger.debug("HTTP request: GET /api");
+    if (guardAPOnly(request)) return;
 
     // Check format parameter
     String format = request->hasParam("format") ? request->getParam("format")->value() : "html";
@@ -894,7 +1003,7 @@ void WebPortal::handleAPI(AsyncWebServerRequest *request)
             response->print(",");
             response->print(static_cast<uint8_t>(sensor.deviceType));
             response->print(",");
-            response->print(String(sensor.serialNumber, HEX));
+            response->print(formatSN(sensor.serialNumber));
             response->print(",");
             response->print(sensor.lastSeen > 0 ? String((millis() - sensor.lastSeen) / 1000) : "-1");
             response->print(",");
@@ -936,15 +1045,19 @@ void WebPortal::handleReboot(AsyncWebServerRequest *request)
 {
     logger.info("HTTP request: GET /reboot - Rebooting device");
 
-    // Send confirmation
     request->send(200, "text/html",
                   "<html><head><meta http-equiv='refresh' content='10;url=/'></head>"
                   "<body><h1>Rebooting</h1>"
                   "<p>The device is rebooting. You will be redirected in 10 seconds...</p></body></html>");
 
-    // Restart ESP32 after 500ms (to allow response to be sent)
-    delay(500);
-    ESP.restart();
+    // Defer the restart so the async server can flush the response cleanly
+    // (same pattern as handleConfigPost). The handleClient() main-loop hook
+    // fires ESP.restart() once restartAt has been reached. The previous
+    // inline `delay(500); ESP.restart()` raced with the async-server task
+    // and intermittently lost the restart entirely when the LoRa loop was
+    // busy at the same moment.
+    restartAt = millis() + 1500;
+    restartRequested = true;
 }
 
 // Handle unknown pages
@@ -990,5 +1103,385 @@ void WebPortal::handleNotFound(AsyncWebServerRequest *request)
     {
         // In normal mode - 404
         request->send(404, "text/plain", "404: Not Found");
+    }
+}
+
+// Diagnostics endpoint: heap and system info 
+void WebPortal::handleDiagHeap(AsyncWebServerRequest *request)
+{
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxAlloc = ESP.getMaxAllocHeap();
+#ifdef BOARD_HAS_PSRAM
+    size_t psramSize = ESP.getPsramSize();
+    size_t psramFree = ESP.getFreePsram();
+#else
+    size_t psramSize = 0;
+    size_t psramFree = 0;
+#endif
+    size_t free8 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t largest8 = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    float frag = (free8 > 0) ? (1.0f - (float)largest8 / (float)free8) : 0.0f;
+
+    AsyncResponseStream *res = request->beginResponseStream("application/json");
+    res->print("{");
+    res->print("\"freeHeap\":"); res->print((unsigned long)freeHeap); res->print(",");
+    res->print("\"maxAllocHeap\":"); res->print((unsigned long)maxAlloc); res->print(",");
+    res->print("\"free8bit\":"); res->print((unsigned long)free8); res->print(",");
+    res->print("\"largest8bit\":"); res->print((unsigned long)largest8); res->print(",");
+    res->print("\"fragmentation\":"); res->print(frag, 4); res->print(",");
+    res->print("\"psramTotal\":"); res->print((unsigned long)psramSize); res->print(",");
+    res->print("\"psramFree\":"); res->print((unsigned long)psramFree); res->print(",");
+    res->print("\"uptimeMs\":"); res->print((unsigned long)millis()); res->print(",");
+    res->print("\"wifiStatus\":"); res->print((int)WiFi.status()); res->print(",");
+    res->print("\"apMode\":"); res->print(isAPMode ? "true" : "false");
+    res->print("}");
+    request->send(res);
+}
+
+// Handle firmware version request
+void WebPortal::handleFirmwareVersion(AsyncWebServerRequest *request)
+{
+    logger.debug("HTTP request: GET /firmware/version");
+    if (guardAPOnly(request)) return;
+    
+    String json = "{\"version\":\"" + String(FIRMWARE_VERSION) + "\"}";
+    request->send(200, "application/json", json);
+}
+
+// Handle firmware check request
+void WebPortal::handleFirmwareCheck(AsyncWebServerRequest *request)
+{
+    logger.debug("HTTP request: GET /firmware/check");
+    if (guardAPOnly(request)) return;
+    
+    // Create HTTP client to check remote version
+    HTTPClient http;
+    http.setTimeout(5000);
+    http.setReuse(false);
+    http.begin(FIRMWARE_UPDATE_URL);
+    http.addHeader("User-Agent", "expLORA-Gateway/" + String(FIRMWARE_VERSION));
+    
+    int httpCode = http.GET();
+    String response = "";
+    
+    if (httpCode == HTTP_CODE_OK) {
+        response = http.getString();
+        logger.info("Firmware check successful");
+    } else {
+        logger.error("Firmware check failed: HTTP " + String(httpCode));
+        response = "{\"error\":\"Failed to check remote version\",\"code\":" + String(httpCode) + "}";
+    }
+    
+    http.end();
+    request->send(httpCode == HTTP_CODE_OK ? 200 : 500, "application/json", response);
+}
+
+// Handle firmware update request
+void WebPortal::handleFirmwareUpdate(AsyncWebServerRequest *request) {
+  logger.debug("HTTP request: POST /firmware/update");
+  if (guardAPOnly(request)) return;
+
+  if (!request->hasParam("url", true)) {
+    request->send(400, "application/json", "{\"error\":\"Missing firmware URL\"}");
+    return;
+  }
+
+  const String firmwareUrl = request->getParam("url", true)->value();
+  logger.info("Starting firmware update from: " + firmwareUrl);
+
+  HTTPClient http;
+  http.setTimeout(10000);
+  http.setReuse(false);
+  if (!http.begin(firmwareUrl)) {
+    request->send(500, "application/json", "{\"error\":\"HTTP begin failed\"}");
+    return;
+  }
+  http.addHeader("User-Agent", "explora-gw-lite/" + String(FIRMWARE_VERSION));
+
+  const int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    logger.error("FW download failed: HTTP " + String(httpCode));
+    request->send(502, "application/json", "{\"error\":\"Firmware download failed\"}");
+    http.end();
+    return;
+  }
+
+  // Content-Length can be -1 for chunked transfer
+  const int contentLength = http.getSize();
+
+  // Target OTA slot + size check
+  const esp_partition_t* ota = esp_ota_get_next_update_partition(nullptr);
+  if (!ota) {
+    request->send(500, "application/json", "{\"error\":\"No OTA partition\"}");
+    http.end();
+    return;
+  }
+  if (contentLength > 0 && (size_t)contentLength > ota->size) {
+    logger.error("FW too large: " + String(contentLength) + " > " + String(ota->size));
+    request->send(413, "application/json", "{\"error\":\"Firmware too large for OTA slot\"}");
+    http.end();
+    return;
+  }
+
+  // Unmap filesystem so flash is not held by MMU
+  LittleFS.end();
+
+  // Start OTA with real size (if known), otherwise UPDATE_SIZE_UNKNOWN
+  const size_t beginSize = (contentLength > 0) ? (size_t)contentLength : (size_t)UPDATE_SIZE_UNKNOWN;
+  if (!Update.begin(beginSize)) {
+    logger.error("Update.begin failed: " + String(Update.getError()));
+    request->send(500, "application/json", "{\"error\":\"Update begin failed\"}");
+    http.end();
+    return;
+  }
+
+  // Immediate response to client; actual flashing continues within the handler
+  request->send(200, "application/json",
+                "{\"status\":\"update-started\",\"slot_size\":" + String(ota->size) +
+                ",\"content_length\":" + String(contentLength) + "}");
+
+  // === STREAM + YIELD loop ===
+  WiFiClient *stream = http.getStreamPtr();
+  static const size_t kBufSize = 2048;
+  uint8_t buf[kBufSize];
+
+  const int expected = contentLength;     // -1 pokud chunked
+  int remaining = expected;
+  size_t totalWritten = 0;
+  int lastPct = -1;
+
+  const uint32_t noDataTimeoutMs = 15000; // 15 s bez dat => konec
+  uint32_t lastDataMs = millis();
+
+  while (true) {
+    int avail = stream->available();
+
+    if (avail > 0) {
+      if (avail > (int)kBufSize) avail = (int)kBufSize;
+      int r = stream->readBytes((char*)buf, avail);
+      if (r <= 0) {
+        delay(1);
+        esp_task_wdt_reset();
+        continue;
+      }
+
+      // Protection against slot overflow even with chunked transfer
+      if ((totalWritten + (size_t)r) > ota->size) {
+        logger.error("Aborting: data exceed OTA slot size (" + String(ota->size) + ")");
+        break;
+      }
+
+      size_t w = Update.write(buf, r);
+      if (w != (size_t)r) {
+        logger.error("Short write to flash: wrote " + String(w) + " of " + String(r));
+        break;
+      }
+
+      totalWritten += w;
+      lastDataMs = millis();
+      if (remaining > 0) remaining -= r;
+
+      // Progres
+      if (expected > 0) {
+        int pct = (int)((totalWritten * 100ULL) / (size_t)expected);
+        if (pct != lastPct && (pct == 1 || pct % 5 == 0 || pct >= 99)) {
+          logger.info("OTA progress: " + String(pct) + "% (" + String(totalWritten) + " / " + String(expected) + " bytes)");
+          lastPct = pct;
+        }
+      } else {
+        // chunked - occasional log
+        if ((totalWritten % (128 * 1024)) < (size_t)r) {
+          logger.info("OTA written: " + String(totalWritten) + " bytes (chunked)");
+        }
+      }
+
+      // YIELD: give CPU to other tasks and feed WDT
+      esp_task_wdt_reset();
+      delay(0);
+    } else {
+      // Nothing to read - short yield
+      delay(1);
+      esp_task_wdt_reset();
+    }
+
+    // End if we know length and everything is written
+    if (expected > 0 && remaining <= 0) break;
+
+    // End when server disconnected and nothing flows anymore
+    if (!http.connected() && stream->available() == 0) break;
+
+    // Timeout bez dat
+    if (millis() - lastDataMs > noDataTimeoutMs) {
+      logger.error("OTA timeout: no data for " + String(noDataTimeoutMs) + " ms");
+      break;
+    }
+  }
+
+  logger.info("OTA written: " + String(totalWritten) + " bytes");
+
+  if (!Update.end()) {
+    logger.error("Update.end error: " + String(Update.getError()));
+    http.end();
+    delay(500);
+    ESP.restart();  // restart for clean state (FS will remount in setup)
+    return;
+  }
+  if (!Update.isFinished()) {
+    logger.error("Update not finished");
+    http.end();
+    delay(500);
+    ESP.restart();
+    return;
+  }
+
+  logger.info("OTA complete, rebooting...");
+  http.end();
+  delay(1000);
+  ESP.restart();
+}
+
+void WebPortal::handleFirmwarePage(AsyncWebServerRequest *request)
+{
+    logger.debug("HTTP request: GET /firmware");
+    if (guardAPOnly(request)) return;
+    String html = HTMLGenerator::generateFirmwarePage();
+    request->send(200, "text/html", html);
+}
+
+// POST /firmware - completion callback (sending response)
+void WebPortal::handleFirmwareUploadComplete(AsyncWebServerRequest *request)
+{
+    logger.debug("HTTP request: POST /firmware (complete)");
+    if (guardAPOnly(request)) return;
+
+    if (otaUploadHasError)
+    {
+        String msg = "{\"error\":\"" + otaUploadErrorMsg + "\"}";
+        request->send(500, "application/json", msg);
+        // reset state for next attempts
+        otaUploadHasError = false;
+        otaUploadErrorMsg = "";
+        otaUploadExpected = otaUploadWritten = 0;
+        return;
+    }
+
+    // Success
+    String msg = "{\"status\":\"update-started\",\"message\":\"Firmware uploaded. Installing… device will reboot automatically.\",\"bytes\":" + String(otaUploadWritten) + "}";
+    request->send(200, "application/json", msg);
+
+    // restart after short delay (so response gets sent)
+    delay(800);
+    ESP.restart();
+}
+
+// Upload chunk callback
+void WebPortal::handleFirmwareUploadChunk(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
+{
+    if (guardAPOnly(request)) return;
+    if (index == 0)
+    {
+        // Upload start (first chunk)
+        otaUploadHasError = false;
+        otaUploadErrorMsg = "";
+        otaUploadExpected = request->contentLength(); // HINT: may be inaccurate with multipart
+        otaUploadWritten = 0;
+
+        logger.info("Firmware upload started: " + filename + " size=" + String(otaUploadExpected));
+
+        // Target OTA slot
+        const esp_partition_t *ota = esp_ota_get_next_update_partition(nullptr);
+        if (!ota)
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "No OTA partition";
+            return;
+        }
+
+        // If server/client specified expected size, at least verify it fits in slot
+        if (otaUploadExpected > 0 && otaUploadExpected > ota->size)
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Firmware too large for OTA slot";
+            return;
+        }
+
+        // Unmap FS (for MMU)
+        LittleFS.end();
+
+        // IMPORTANT: use size UNKNOWN for multipart - otherwise risk "premature end"
+        if (!Update.begin((size_t)UPDATE_SIZE_UNKNOWN))
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Update.begin failed: " + String(Update.getError());
+            return;
+        }
+    }
+
+    if (otaUploadHasError)
+        return;
+
+    // Write chunk
+    if (len)
+    {
+        // Safety: never overwrite OTA slot size
+        const esp_partition_t *ota = esp_ota_get_next_update_partition(nullptr);
+        if (ota && (otaUploadWritten + len) > ota->size)
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Data exceed OTA slot size";
+            return;
+        }
+
+        size_t w = Update.write(data, len);
+        if (w != len)
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Short write: " + String(w) + "/" + String(len);
+            return;
+        }
+        otaUploadWritten += w;
+
+        // Progress log
+        if (otaUploadExpected > 0)
+        {
+            int pct = (int)((otaUploadWritten * 100ULL) / (size_t)otaUploadExpected);
+            if (pct == 1 || pct % 5 == 0 || pct >= 99)
+            {
+                logger.info("OTA progress: " + String(pct) + "% (" + String(otaUploadWritten) + " / " + String(otaUploadExpected) + " bytes)");
+            }
+        }
+        else if ((otaUploadWritten % (128 * 1024)) < len)
+        {
+            logger.info("OTA written: " + String(otaUploadWritten) + " bytes (chunked)");
+        }
+
+        // Yield + WDT
+        esp_task_wdt_reset();
+        delay(0);
+    }
+
+    if (final)
+    {
+        logger.info("Firmware upload finished: total " + String(otaUploadWritten) + " bytes");
+
+        if (otaUploadExpected > 0 && otaUploadWritten != otaUploadExpected)
+        {
+            logger.warning("Upload size hint mismatch: written=" + String(otaUploadWritten) + " expected=" + String(otaUploadExpected));
+        }
+
+        // IMPORTANT: finish multipart upload with evenIfRemaining=true
+        if (!Update.end(true))
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Update.end error: " + String(Update.getError());
+            return;
+        }
+        if (!Update.isFinished())
+        {
+            otaUploadHasError = true;
+            otaUploadErrorMsg = "Update not finished";
+            return;
+        }
+        // response will be sent by handleFirmwareUploadComplete()
     }
 }

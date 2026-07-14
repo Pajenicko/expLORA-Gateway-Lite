@@ -47,10 +47,10 @@ private:
     static void freeBuffer();
 
     // Add HTML opening code
-    static void addHtmlHeader(String &html, const String &title, bool isAPMode);
+    static void addHtmlHeader(String &html, const String &title, bool isAPMode = false);
 
     // Add HTML closing code
-    static void addHtmlFooter(String &html);
+    static void addHtmlFooter(String &html, bool isAPMode = false);
 
     // Add CSS for pages
     static void addStyles(String &html);
@@ -79,7 +79,7 @@ public:
                                     const String &prefix, bool haEnabled, String &haPrefix);
 
     // Generate sensor list page
-    static String generateSensorsPage(const std::vector<SensorData> &sensors);
+    static String generateSensorsPage(const std::vector<ActiveSensorEntry>& sensors);
 
     // Generate sensor add page
     static String generateSensorAddPage();
@@ -95,6 +95,9 @@ public:
 
     // Generate JSON for API
     static String generateAPIJson(const std::vector<SensorData> &sensors);
+
+    // Generate firmware update page
+    static String generateFirmwarePage();
 
     // Optimized versions using buffer
     static void generateSensorTable(char *buffer, size_t &maxLen, const std::vector<SensorData> &sensors);

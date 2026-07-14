@@ -67,6 +67,27 @@ WebPortal *webPortal;         // Web interface
 unsigned long apStartTime = 0;
 bool temporaryAPMode = false;
 
+// NTP synchronization helper - returns true if time was successfully synchronized
+bool syncNTPTime(const String &timezone, unsigned long timeoutMs = 10000)
+{
+    configTime(0, 0, NTP_SERVER);
+    setenv("TZ", timezone.c_str(), 1);
+    tzset();
+
+    // Wait for actual NTP sync with timeout
+    struct tm timeinfo;
+    unsigned long startWait = millis();
+    while (!getLocalTime(&timeinfo, 100))
+    {
+        if (millis() - startWait > timeoutMs)
+        {
+            return false;
+        }
+        delay(100);
+    }
+    return true;
+}
+
 // File system initialization
 bool initFileSystem()
 {
@@ -191,19 +212,16 @@ void setup()
     apStartTime = millis();
     temporaryAPMode = true;
 
+    String uniqueSSID = makeApName();
+
     if (configManager->configMode || configManager->wifiSSID.length() == 0)
     {
         // We're in configuration mode or don't have credentials - AP mode only
         logger.info("Starting in AP mode only");
         WiFi.mode(WIFI_AP);
 
-        // Get device MAC address and create unique SSID
-        String macAddress = WiFi.macAddress();
-        macAddress.replace(":", "");                                 // Remove colons
-        String uniqueSSID = "expLORA-GW-" + macAddress.substring(6); // Use last 6 characters of MAC address
-
-        // Configure AP with unique SSID
-        WiFi.softAP(uniqueSSID.c_str());
+        // Configure AP with unique SSID (channel 6, max 4 clients)
+        WiFi.softAP(uniqueSSID.c_str(), nullptr, 6, 0, 4);
         logger.info("AP started with SSID: " + uniqueSSID + ", IP: " + WiFi.softAPIP().toString());
 
         configManager->enableConfigMode(true);
@@ -217,13 +235,8 @@ void setup()
         logger.info("Starting in AP+STA mode (dual mode)");
         WiFi.mode(WIFI_AP_STA);
 
-        // Get device MAC address and create unique SSID
-        String macAddress = WiFi.macAddress();
-        macAddress.replace(":", "");                                 // Remove colons
-        String uniqueSSID = "expLORA-GW-" + macAddress.substring(6); // Use last 6 characters of MAC address
-
-        // Configure AP part with unique SSID
-        WiFi.softAP(uniqueSSID.c_str());
+        // Configure AP part with unique SSID (channel 6, max 4 clients)
+        WiFi.softAP(uniqueSSID.c_str(), nullptr, 6, 0, 4);
         logger.info("Temporary AP started with SSID: " + uniqueSSID +
                     " (will be active for 5 minutes). IP: " + WiFi.softAPIP().toString());
 
@@ -244,12 +257,16 @@ void setup()
             logger.info("WiFi connected! IP: " + WiFi.localIP().toString());
             configManager->enableConfigMode(false);
 
-            // Initialize NTP
-            configTime(0, 0, NTP_SERVER);                     // First set to UTC
-            setenv("TZ", configManager->timezone.c_str(), 1); // Set the TZ environment variable
-            tzset();                                          // Apply the time zone
-            logger.info("NTP time set");
-            logger.setTimeInitialized(true);
+            // Initialize NTP with sync verification
+            if (syncNTPTime(configManager->timezone))
+            {
+                logger.info("NTP time synchronized successfully");
+                logger.setTimeInitialized(true);
+            }
+            else
+            {
+                logger.warning("NTP sync failed - time not available");
+            }
         }
         else
         {
@@ -317,6 +334,33 @@ void loop()
 {
     esp_task_wdt_reset();
 
+    // Detect WiFi status transitions and adapt web server routes
+    static wl_status_t lastWifiStatus = WiFi.status();
+    wl_status_t currentWifiStatus = WiFi.status();
+    if (lastWifiStatus != currentWifiStatus)
+    {
+        // On transition to connected, update portal mode (routes are always registered)
+        if (currentWifiStatus == WL_CONNECTED)
+        {
+            logger.info("WiFi connected (transition). Reinitializing web portal routes.");
+            if (webPortal)
+            {
+                webPortal->setAPMode(false);
+            }
+        }
+        // On transition away from connected, switch portal to AP mode so handlers reflect captive state
+        else if (lastWifiStatus == WL_CONNECTED && currentWifiStatus != WL_CONNECTED)
+        {
+            logger.warning("WiFi disconnected (transition). Switching web portal to AP mode.");
+            if (webPortal)
+            {
+                webPortal->setAPMode(true);
+                // No immediate restart to avoid flapping; routes will still serve config via handlers
+            }
+        }
+        lastWifiStatus = currentWifiStatus;
+    }
+
     // Check timer for temporary AP mode
     if (temporaryAPMode && !configManager->configMode && configManager->wifiSSID.length() > 0)
     {
@@ -378,44 +422,81 @@ void loop()
         }
     }
 
-    // Check WiFi connection and reconnect if needed
-    if (!configManager->configMode && WiFi.status() != WL_CONNECTED)
+    // Check WiFi connection and reconnect if needed.
+    // Non-blocking state machine: kick off WiFi.begin() once per
+    // WIFI_RECONNECT_INTERVAL window, then poll status across loop iterations
+    // up to RECONNECT_ATTEMPT_TIMEOUT_MS before giving up. Keeps web/DNS/MQTT/LoRa
+    // responsive throughout the reconnect window.
     {
-        unsigned long now = millis();
-        if (now - configManager->lastWifiAttempt > WIFI_RECONNECT_INTERVAL)
+        enum class ReconnectState { Idle, InProgress };
+        static ReconnectState reconnectState = ReconnectState::Idle;
+        static unsigned long reconnectStartedAt = 0;
+        constexpr unsigned long RECONNECT_ATTEMPT_TIMEOUT_MS = 5000; // matches old 10 * 500ms
+
+        if (!configManager->configMode && WiFi.status() != WL_CONNECTED)
         {
-            logger.info("Attempting to reconnect to WiFi...");
-            configManager->lastWifiAttempt = now;
-            WiFi.begin(configManager->wifiSSID.c_str(), configManager->wifiPassword.c_str());
+            unsigned long now = millis();
 
-            int attempts = 0;
-            while (WiFi.status() != WL_CONNECTED && attempts < 10)
+            if (reconnectState == ReconnectState::Idle)
             {
-                delay(500);
-                Serial.print(".");
-                attempts++;
+                if (now - configManager->lastWifiAttempt > WIFI_RECONNECT_INTERVAL)
+                {
+                    logger.info("Attempting to reconnect to WiFi...");
+                    configManager->lastWifiAttempt = now;
+                    WiFi.begin(configManager->wifiSSID.c_str(), configManager->wifiPassword.c_str());
+                    reconnectStartedAt = now;
+                    reconnectState = ReconnectState::InProgress;
+                }
             }
-
-            if (WiFi.status() == WL_CONNECTED)
+            else // ReconnectState::InProgress
             {
-                logger.info("WiFi reconnected! IP: " + WiFi.localIP().toString());
-
-                // Update NTP time
-                configTime(0, 0, NTP_SERVER);                     // First set to UTC
-                setenv("TZ", configManager->timezone.c_str(), 1); // Set the TZ environment variable
-                tzset();                                          // Apply the time zone
+                if (WiFi.status() == WL_CONNECTED)
+                {
+                    logger.info("WiFi reconnected! IP: " + WiFi.localIP().toString());
+                    // NTP sync verification (note: this call may still block briefly)
+                    if (syncNTPTime(configManager->timezone))
+                    {
+                        logger.info("NTP time re-synchronized successfully");
+                        logger.setTimeInitialized(true);
+                    }
+                    else
+                    {
+                        logger.warning("NTP re-sync failed after WiFi reconnect");
+                    }
+                    reconnectState = ReconnectState::Idle;
+                }
+                else if (now - reconnectStartedAt > RECONNECT_ATTEMPT_TIMEOUT_MS)
+                {
+                    logger.warning("Failed to reconnect to WiFi");
+                    reconnectState = ReconnectState::Idle;
+                }
+                // else: keep waiting; loop continues to service web/MQTT/LoRa
             }
-            else
-            {
-                logger.warning("Failed to reconnect to WiFi");
-            }
+        }
+        else if (reconnectState == ReconnectState::InProgress)
+        {
+            // Connected (or no longer trying) via some other path while we were waiting.
+            reconnectState = ReconnectState::Idle;
         }
     }
 
     // Short delay for stability
     delay(5);
 
-    // Memory diagnostics every 10 minutes
+    // Periodically rotate per-sensor health buckets so a dead-silent sensor
+    // (no packets at all) eventually drops out of the 24h "OK" tally instead
+    // of clinging to whatever was in the last bucket at boot.
+    static unsigned long lastHealthTick = 0;
+    if (millis() - lastHealthTick > 60000) // once a minute is plenty
+    {
+        lastHealthTick = millis();
+        if (sensorManager)
+        {
+            sensorManager->tickSensorHealth(millis());
+        }
+    }
+
+    // Memory diagnostics and time check every 10 minutes
     static unsigned long lastMemCheck = 0;
     if (millis() - lastMemCheck > 600000)
     { // 10 minutes
@@ -431,5 +512,30 @@ void loop()
                          " bytes, Largest block: " + String(ESP.getMaxAllocPsram()) + " bytes");
         }
 #endif
+
+        // Periodic time check - re-sync if time was lost
+        struct tm timeinfo;
+        if (!getLocalTime(&timeinfo, 100))
+        {
+            logger.warning("System time invalid - attempting NTP re-sync");
+            if (WiFi.status() == WL_CONNECTED)
+            {
+                if (syncNTPTime(configManager->timezone))
+                {
+                    logger.info("NTP time recovered successfully");
+                    logger.setTimeInitialized(true);
+                }
+                else
+                {
+                    logger.error("NTP re-sync failed - time remains unavailable");
+                    logger.setTimeInitialized(false);
+                }
+            }
+            else
+            {
+                logger.warning("Cannot sync time - WiFi not connected");
+                logger.setTimeInitialized(false);
+            }
+        }
     }
 }

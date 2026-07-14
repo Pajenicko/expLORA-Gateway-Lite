@@ -21,8 +21,14 @@
 
 #pragma once
 
+#include <Arduino.h>
+#include <WiFi.h>
+
 // Firmware version
-#define FIRMWARE_VERSION "1.0.9"
+#define FIRMWARE_VERSION "1.1.13"
+
+// OTA Configuration
+#define FIRMWARE_UPDATE_URL "https://pajenicko.cz/webflash/explora-gw-lite-autoupdate.json"
 
 // LoRa registers
 #define REG_FIFO 0x00
@@ -72,7 +78,7 @@
 
 // Application configuration
 #define MAX_SENSORS 20                // Maximum number of sensors
-#define LOG_BUFFER_SIZE 200           // Size of log buffer
+#define LOG_BUFFER_SIZE 150           // Size of log buffer
 #define AP_TIMEOUT 300000             // AP mode timeout (5 minutes in milliseconds)
 #define WIFI_RECONNECT_INTERVAL 60000 // WiFi reconnect attempt interval (1 minute in milliseconds)
 #define WDT_TIMEOUT 10                // Watchdog timeout in seconds
@@ -82,6 +88,29 @@
 #define SENSORS_FILE "/sensors.json" // Sensors file
 
 // NTP configuration
+// Format uint32_t as zero-padded uppercase hex string
+// width=6 for serial numbers (3 bytes), width=8 for device keys (4 bytes)
+inline String formatHex(uint32_t value, uint8_t width)
+{
+    String hex = String(value, HEX);
+    hex.toUpperCase();
+    while (hex.length() < width)
+        hex = "0" + hex;
+    return hex;
+}
+
+#define formatSN(val) formatHex(val, 6)
+#define formatKey(val) formatHex(val, 8)
+
+// Generate the unique AP SSID for this device from its MAC address.
+// Format: "expLORA-GW-XXXXXX" where XXXXXX is the last 3 bytes of the MAC in uppercase hex.
+inline String makeApName()
+{
+    String mac = WiFi.macAddress();
+    mac.replace(":", "");
+    return "expLORA-GW-" + mac.substring(6);
+}
+
 #define NTP_SERVER "pool.ntp.org"
 #define DEFAULT_TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3" // Central European Time with auto DST
 

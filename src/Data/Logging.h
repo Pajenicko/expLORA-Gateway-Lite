@@ -25,6 +25,15 @@
 #include <mutex>
 #include "../config.h"
 
+// Preallocated capacities for in-memory log strings
+// Capping stored message length prevents unbounded growth and fragmentation
+#ifndef LOG_MESSAGE_CAPACITY
+#define LOG_MESSAGE_CAPACITY 300   // bytes reserved per log message in buffer
+#endif
+#ifndef LOG_TIME_CAPACITY
+#define LOG_TIME_CAPACITY 32      // bytes reserved for formatted time string
+#endif
+
 /**
  * Definition of a logging system with support for various levels
  *

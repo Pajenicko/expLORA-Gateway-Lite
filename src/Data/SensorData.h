@@ -24,6 +24,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "SensorTypes.h"
+#include "SensorHealth.h"
 
 /**
  * Structure for storing sensor data
@@ -76,6 +77,10 @@ struct SensorData
     // General device data
     float batteryVoltage; // Battery voltage (V)
     int rssi;             // Signal strength (dBm)
+
+    // Per-sensor health tracking (rejection counters, streaks, 24h window).
+    // Updated by SensorManager::recordSensor{Success,Rejection}/tickSensorHealth.
+    SensorHealth::Stats health;
 
     // Constructor for initialization with default values
     SensorData() : deviceType(SensorType::UNKNOWN),
@@ -169,7 +174,7 @@ struct SensorData
     {
         json["deviceType"] = static_cast<uint8_t>(deviceType);
         json["typeName"] = getTypeInfo().name;
-        json["serialNumber"] = String(serialNumber, HEX);
+        json["serialNumber"] = formatSN(serialNumber);
         json["name"] = name;
 
         // Add data specific to sensor type with validity check
@@ -347,4 +352,9 @@ struct SensorData
             return String(seconds / 3600) + " hours ago";
         }
     }
+};
+
+struct ActiveSensorEntry {
+    size_t       index;   // real index in the sensors array
+    SensorData   data;
 };

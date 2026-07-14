@@ -19,7 +19,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
- #include "HTMLGenerator.h"
+#include "HTMLGenerator.h"
 #include <esp_heap_caps.h>
 #include <algorithm>
 #include <Arduino.h>
@@ -95,7 +95,7 @@ void HTMLGenerator::deinit()
 }
 
 // Adding HTML header code
-void HTMLGenerator::addHtmlHeader(String &html, const String &title, bool isAPMode = false)
+void HTMLGenerator::addHtmlHeader(String &html, const String &title, bool isAPMode)
 {
     html += "<!DOCTYPE html><html><head>";
     html += "<meta charset='UTF-8'>";
@@ -108,24 +108,99 @@ void HTMLGenerator::addHtmlHeader(String &html, const String &title, bool isAPMo
     html += "</head><body>";
     html += "<header><h1>expLORA Gateway Lite</h1><h2>" + title + "</h2></header>";
 
-    // Add navigation only if not in AP mode
+    // Navigation: full in STA, minimal in AP (Config + Reboot)
     if (!isAPMode)
     {
         addNavigation(html, title);
     }
     else
     {
-        // In AP mode, just add the container div without navigation
+        html += "<nav>";
+        html += "<a href='/config' class='" + String(title == "Configuration" ? "active" : "") + "'>WiFi Setup</a>";
+        html += "<a href='/reboot' onclick=\"return confirm('Are you sure you want to reboot the device?');\">Reboot</a>";
+        html += "<a href='javascript:void(0);' class='icon' onclick='toggleMenu()'>&#9776;</a>";
+        html += "</nav>";
         html += "<div class='container'>";
     }
 }
 
 // Adding HTML footer code
-void HTMLGenerator::addHtmlFooter(String &html)
+void HTMLGenerator::addHtmlFooter(String &html, bool isAPMode)
 {
     html += "<footer>";
-    html += "<p>expLORA Gateway Lite v" + String(FIRMWARE_VERSION) + " &copy; 2025</p>";
+    html += "<p>expLORA Gateway Lite v" + String(FIRMWARE_VERSION) + " &copy; 2026</p>";
+    if (!isAPMode)
+    {
+        html += "<p><button id='btnUpdate' onclick='checkUpdate()' class='btn' style='font-size:11px;padding:5px 10px;'>Check for update</button></p>";
+    }
+
+    /* OTA banner (displayed immediately after update starts) */
+    html += "<div id='otaNotice' style='display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:9999;background:#222;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.25);'>";
+    html += "  <span id='otaMsg'>Firmware update started. Please wait ~2 minutes. The device will reboot automatically.</span>";
+    html += "</div>";
+
+    html += "<script>";
+    html += "(function(){";
+    html += "  window.showNotice = function(msg){";
+    html += "    var n=document.getElementById('otaNotice');";
+    html += "    var m=document.getElementById('otaMsg');";
+    html += "    if(m&&msg) m.textContent=msg;";
+    html += "    if(n) n.style.display='block';";
+    html += "  };";
+    html += "  window.hideNotice = function(){";
+    html += "    var n=document.getElementById('otaNotice');";
+    html += "    if(n) n.style.display='none';";
+    html += "  };";
+
+    html += "  function parseJsonSafe(text){ try{ return JSON.parse(text); }catch(e){ return null; } }";
+
+    html += "  window.checkUpdate = function(){";
+    html += "    fetch('/firmware/check')";
+    html += "      .then(function(response){";
+    html += "        return response.text().then(function(text){ return { ok: response.ok, status: response.status, data: parseJsonSafe(text), raw:text }; });";
+    html += "      })";
+    html += "      .then(function(res){";
+    html += "        if(!res.ok){ throw new Error((res.data && (res.data.error||res.data.message)) || ('HTTP '+res.status)); }";
+    html += "        var d=res.data; if(!d){ throw new Error('Bad JSON: '+res.raw); }";
+    html += "        if(d.version && d.version !== '" + String(FIRMWARE_VERSION) + "'){";
+    html += "          if(confirm('New version '+d.version+' available. Update now?')){";
+    html += "            window.updateFirmware(d.url);";
+    html += "          }";
+    html += "        } else {";
+    html += "          alert('You have the latest version: " + String(FIRMWARE_VERSION) + "');";
+    html += "        }";
+    html += "      })";
+    html += "      .catch(function(err){ alert('Update check failed: '+err.message); });";
+    html += "  };";
+
+    html += "  window.updateFirmware = function(url){";
+    html += "    var btn=document.getElementById('btnUpdate'); if(btn) btn.disabled=true;";
+    html += "    window.showNotice('Firmware update started. Please wait ~2 minutes. Do not power off.');";
+    html += "    if (typeof startAutoRefresh==='function') { startAutoRefresh(120000); } else { setTimeout(function(){ location.reload(); },120000); }";
+    html += "    fetch('/firmware/update',{";
+    html += "      method:'POST',";
+    html += "      headers:{'Content-Type':'application/x-www-form-urlencoded'},";
+    html += "      body:'url='+encodeURIComponent(url)";
+    html += "    })";
+    html += "    .then(function(response){";
+    html += "      return response.text().then(function(text){ return { ok: response.ok, status: response.status, data: parseJsonSafe(text), raw:text }; });";
+    html += "    })";
+    html += "    .then(function(res){";
+    html += "      if(!res.ok){ throw new Error((res.data && (res.data.error||res.data.message)) || ('HTTP '+res.status)); }";
+    html += "      if(res.data && res.data.message){ window.showNotice(res.data.message); }";
+    html += "    })";
+    html += "    .catch(function(err){";
+    html += "      console.error('Firmware update error:', err);";
+    html += "      window.showNotice('Update request sent. Device may already be updating. If nothing happens, retry. Error: '+err.message);";
+    html += "    })";
+    html += "    .finally(function(){ if(btn) btn.disabled=false; });";
+    html += "  };";
+
+    html += "})();";
+    html += "</script>";
+        
     html += "</footer>";
+
 
     // Adding JavaScript
     addJavaScript(html);
@@ -227,9 +302,9 @@ void HTMLGenerator::addNavigation(String &html, const String &activePage)
     html += "<a href='/config' class='" + String(activePage == "Configuration" ? "active" : "") + "'>WiFi Setup</a>";
     html += "<a href='/sensors' class='" + String(activePage == "Sensors" ? "active" : "") + "'>Sensors</a>";
     html += "<a href='/mqtt' class='" + String(activePage == "MQTT" ? "active" : "") + "'>MQTT</a>";
+    html += "<a href='/firmware' class='" + String(activePage == "Firmware" ? "active" : "") + "'>Firmware</a>";
     html += "<a href='/logs' class='" + String(activePage == "Logs" ? "active" : "") + "'>Logs</a>";
     html += "<a href='/api' class='" + String(activePage == "API" ? "active" : "") + "'>API</a>";
-    html += "<a href='/update'>Update</a>";
     html += "<a href='/reboot' onclick=\"return confirm('Are you sure you want to reboot the device?');\">Reboot</a>";
     html += "<a href='javascript:void(0);' class='icon' onclick='toggleMenu()'>&#9776;</a>";
     html += "</nav>";
@@ -241,9 +316,10 @@ void HTMLGenerator::addNavigation(String &html, const String &activePage)
 String HTMLGenerator::generateHomePage(const std::vector<SensorData> &sensors)
 {
     String html;
+    html.reserve(4096);
 
     // Add header with reduced content
-    addHtmlHeader(html, "Home");
+    addHtmlHeader(html, "Home", WiFi.status() != WL_CONNECTED);
 
     // Status card
     html += "<div class='card'>";
@@ -334,8 +410,8 @@ String HTMLGenerator::generateHomePage(const std::vector<SensorData> &sensors)
     // Auto-refresh with longer interval in AP mode
     html += "<script>startAutoRefresh(60000);</script>"; // 60 seconds instead of 30
 
-    // Add footer
-    addHtmlFooter(html);
+    // Add footer (hide update button in AP mode)
+    addHtmlFooter(html, WiFi.status() != WL_CONNECTED);
 
     return html;
 }
@@ -385,6 +461,7 @@ void HTMLGenerator::generateSensorTable(char *buffer, size_t &maxLen, const std:
 String HTMLGenerator::generateConfigPage(const String &ssid, const String &password, bool configMode, const String &ip, const String &timezone)
 {
     String html;
+    html.reserve(4096);
 
     // Add header - pass configMode to suppress navigation in AP mode
     addHtmlHeader(html, "Configuration", configMode);
@@ -460,6 +537,7 @@ String HTMLGenerator::generateMqttPage(const String &host, int port, const Strin
                                        const String &prefix, bool haEnabled, String &haPrefix)
 {
     String html;
+    html.reserve(4096);
 
     // Add header
     addHtmlHeader(html, "MQTT Configuration");
@@ -533,52 +611,196 @@ String HTMLGenerator::generateMqttPage(const String &host, int port, const Strin
 }
 
 // Generating page with sensor list
-String HTMLGenerator::generateSensorsPage(const std::vector<SensorData> &sensors)
+// Format milliseconds-since-event as a short relative string ("3 min ago",
+// "2 h ago", "5 d ago"). Returns "—" if `hasValue` is false.
+static String formatRelativeMillis(unsigned long nowMillis, unsigned long thenMillis, bool hasValue)
+{
+    if (!hasValue) return "—";
+    unsigned long deltaMs = nowMillis - thenMillis; // wrap-safe via unsigned subtraction
+    unsigned long secs = deltaMs / 1000UL;
+    if (secs < 60)   return String(secs) + " s ago";
+    unsigned long mins = secs / 60UL;
+    if (mins < 60)   return String(mins) + " min ago";
+    unsigned long hrs = mins / 60UL;
+    if (hrs < 48)    return String(hrs) + " h ago";
+    return String(hrs / 24UL) + " d ago";
+}
+
+// Render the health status as a coloured inline-style badge plus optional
+// secondary info (last reject reason, recent counts).
+static String renderHealthBadge(const SensorHealth::Stats &h, unsigned long nowMillis)
+{
+    SensorHealth::Status st = SensorHealth::status(h, nowMillis);
+    const char *label = "?";
+    const char *bg    = "#bdc3c7"; // grey default
+    switch (st)
+    {
+        case SensorHealth::Status::Healthy: label = "Healthy"; bg = "#27ae60"; break;
+        case SensorHealth::Status::Errors:  label = "Errors";  bg = "#e74c3c"; break;
+        case SensorHealth::Status::Stale:   label = "Stale";   bg = "#f39c12"; break;
+        case SensorHealth::Status::Unknown: label = "Unknown"; bg = "#bdc3c7"; break;
+    }
+    String badge = "<span style='background:";
+    badge += bg;
+    badge += ";color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;font-weight:bold;'>";
+    badge += label;
+    badge += "</span>";
+    return badge;
+}
+
+String HTMLGenerator::generateSensorsPage(const std::vector<ActiveSensorEntry> &entries)
 {
     String html;
-    // Adding header
+    html.reserve(12288);
     addHtmlHeader(html, "Sensors");
 
-    // Sensor list
-    html += "<div class='card'>";
-    html += "<h2>Configured Sensors</h2>";
+    html += "<div class='card'><h2>Configured Sensors</h2>";
 
-    if (sensors.empty())
+    if (entries.empty())
     {
         html += "<p>No sensors configured yet.</p>";
     }
     else
     {
-        html += "<table>";
-        html += "<tr><th>Name</th><th>Type</th><th>Serial Number</th><th>Last Seen</th><th>Actions</th></tr>";
+        // Snapshot 'now' once per page render so every row computes deltas
+        // against the same reference. millis() can wrap every ~50 days but
+        // unsigned subtraction in formatRelativeMillis handles that correctly.
+        const unsigned long nowMillis = millis();
 
-        for (size_t i = 0; i < sensors.size(); i++)
+        html += "<table><tr>"
+                "<th>Name</th><th>Type</th><th>Serial</th>"
+                "<th>Status</th><th>Last Seen</th><th>24h</th><th>Actions</th></tr>";
+
+        for (const auto &entry : entries)
         {
-            const auto &sensor = sensors[i];
-            if (sensor.configured)
-            {
-                html += "<tr>";
-                html += "<td>" + sensor.name + "</td>";
-                html += "<td>" + sensorTypeToString(sensor.deviceType) + "</td>";
-                html += "<td>" + String(sensor.serialNumber, HEX) + "</td>";
-                html += "<td>" + sensor.getLastSeenString() + "</td>";
-                html += "<td>";
-                html += "<a href='/sensors/edit?index=" + String(i) + "' class='btn'>Edit</a> ";
-                html += "<a href='/sensors/delete?index=" + String(i) + "' class='btn btn-delete' onclick='return confirm(\"Are you sure you want to delete this sensor?\")'>Delete</a>";
-                html += "</td>";
-                html += "</tr>";
-            }
-        }
+            const auto &s = entry.data;
+            size_t idx    = entry.index;
+            const auto &h = s.health;
 
+            uint32_t ok24h     = SensorHealth::okLast24h(h);
+            uint32_t rejected  = SensorHealth::rejectedLast24h(h);
+
+            html += "<tr>";
+            html += "<td>" + s.name + "</td>";
+            html += "<td>" + sensorTypeToString(s.deviceType) + "</td>";
+            html += "<td>" + formatSN(s.serialNumber) + "</td>";
+
+            // Status: badge + optional last reject reason on the line below
+            html += "<td>";
+            html += renderHealthBadge(h, nowMillis);
+            if (h.hasLastReject && h.consecutiveRejections > 0)
+            {
+                html += "<br><small style='color:#c0392b;'>";
+                html += "last reject: ";
+                html += String(h.lastRejectReason);
+                html += " (";
+                html += formatRelativeMillis(nowMillis, h.lastRejectAtMillis, true);
+                html += ")</small>";
+            }
+            html += "</td>";
+
+            // Last seen: prefer relative form derived from our millis snapshot;
+            // the wall-clock form (getLastSeenString) is kept as a tooltip so
+            // users can still see the exact timestamp if NTP is synced.
+            html += "<td title='" + s.getLastSeenString() + "'>";
+            html += formatRelativeMillis(nowMillis, h.lastOkAtMillis, h.hasLastOk);
+            html += "</td>";
+
+            // 24h column: minimal noise when healthy, loud when broken.
+            //   - no activity:       em-dash
+            //   - all OK:            plain count
+            //   - has rejections:    "<ok> · <reject> err" with reject part red+bold
+            html += "<td title='Last 24 h sliding window'>";
+            if (ok24h == 0 && rejected == 0)
+            {
+                html += "&mdash;";
+            }
+            else if (rejected == 0)
+            {
+                html += String(ok24h);
+            }
+            else
+            {
+                html += String(ok24h);
+                html += " &middot; <span style='color:#c0392b;font-weight:bold;'>";
+                html += String(rejected);
+                html += " err</span>";
+            }
+            html += "</td>";
+
+            html += "<td>";
+            html += "<a class='btn' href='/sensors/edit?index=" + String(idx) + "'>Edit</a> ";
+            html += "<a class='btn btn-delete' href='/sensors/delete?index=" + String(idx) +
+                    "' onclick='return confirm(\"Are you sure you want to delete this sensor?\")'>Delete</a>";
+            html += "</td></tr>";
+        }
         html += "</table>";
     }
 
-    html += "<p><a href='/sensors/add' class='btn'>Add New Sensor</a></p>";
+    html += "<p><a class='btn' href='/sensors/add'>Add New Sensor</a></p>";
+    html += "</div>";
+    addHtmlFooter(html);
+    return html;
+}
+
+String HTMLGenerator::generateFirmwarePage() {
+    String html;
+    html.reserve(4096);
+    addHtmlHeader(html, "Firmware");
+
+    // card: Online update
+    html += "<div class='card'>";
+    html += "<h2>Online Update</h2>";
+    html += "<p>Current firmware: <strong>v" + String(FIRMWARE_VERSION) + "</strong></p>";
+    html += "<p><button id='btnUpdate' onclick='checkUpdate()' class='btn'>Check for update</button></p>";
+    html += "<hr>";
+    html += "<label for='fwUrl'>Custom firmware URL:</label>";
+    html += "<input type='text' id='fwUrl' placeholder='https://example.com/firmware.bin'>";
+    html += "<button class='btn' onclick='(function(){var u=document.getElementById(\"fwUrl\").value.trim(); if(u){ updateFirmware(u); } else { alert(\"Enter firmware URL first\"); }})()'>Update from URL</button>";
     html += "</div>";
 
-    // Adding footer
-    addHtmlFooter(html);
+    // Card: Manual upload (.bin)
+    html += "<div class='card'>";
+    html += "<h2>Manual Upload (.bin)</h2>";
+    html += "<form id='uploadForm' enctype='multipart/form-data'>";
+    html += "  <input type='file' name='bin' id='fwFile' accept='.bin,application/octet-stream' required>";
+    html += "  <p><small>Do not power off the device during upload and install.</small></p>";
+    html += "  <button type='submit' id='btnUpload' class='btn'>Upload & Install</button>";
+    html += "</form>";
+    html += "</div>";
 
+    html += "<script>";
+    html += "(function(){";
+    html += "  function parseJsonSafe(t){ try{return JSON.parse(t);}catch(e){return null;} }";
+    html += "  var f=document.getElementById('uploadForm');";
+    html += "  var b=document.getElementById('btnUpload');";
+    html += "  if(f){";
+    html += "    f.addEventListener('submit', function(ev){";
+    html += "      ev.preventDefault();";
+    html += "      if(!document.getElementById('fwFile').files.length){ alert('Select .bin file first'); return; }";
+    html += "      if(b) b.disabled=true;";
+    html += "      if(window.showNotice){ window.showNotice('Uploading firmware… Please wait ~2 minutes. Do not power off.'); }";
+    html += "      if (typeof startAutoRefresh==='function') { startAutoRefresh(120000); } else { setTimeout(function(){ location.reload(); },120000); }";
+    html += "      var fd=new FormData(f);";
+    html += "      fetch('/firmware',{ method:'POST', body:fd })";
+    html += "        .then(function(resp){ return resp.text().then(function(t){ return {ok:resp.ok,status:resp.status,data:parseJsonSafe(t),raw:t}; }); })";
+    html += "        .then(function(res){";
+    html += "          if(!res.ok){ throw new Error((res.data&&(res.data.error||res.data.message))||('HTTP '+res.status)); }";
+    html += "          var msg=(res.data&&res.data.message)?res.data.message:'Firmware uploaded. Installing… device will reboot automatically.';";
+    html += "          if(window.showNotice){ window.showNotice(msg); } else { alert(msg); }";
+    html += "        })";
+    html += "        .catch(function(err){";
+    html += "          console.error('Upload error:',err);";
+    html += "          if(window.showNotice){ window.showNotice('Upload request sent. Device may already be updating. Error: '+err.message); }";
+    html += "          else { alert('Upload failed: '+err.message); }";
+    html += "        })";
+    html += "        .finally(function(){ if(b) b.disabled=false; });";
+    html += "    });";
+    html += "  }";
+    html += "})();";
+    html += "</script>";
+
+    addHtmlFooter(html);
     return html;
 }
 
@@ -586,6 +808,7 @@ String HTMLGenerator::generateSensorsPage(const std::vector<SensorData> &sensors
 String HTMLGenerator::generateSensorAddPage()
 {
     String html;
+    html.reserve(4096);
 
     // Adding header
     addHtmlHeader(html, "Add Sensor");
@@ -856,6 +1079,7 @@ String HTMLGenerator::generateSensorAddPage()
 String HTMLGenerator::generateSensorEditPage(const SensorData &sensor, int index)
 {
     String html;
+    html.reserve(8192);
 
     // Adding header
     addHtmlHeader(html, "Edit Sensor");
@@ -939,11 +1163,11 @@ String HTMLGenerator::generateSensorEditPage(const SensorData &sensor, int index
 
     // Serial number
     html += "<label for='serialNumber'>Serial Number:</label>";
-    html += "<input type='text' id='serialNumber' name='serialNumber' value='" + String(sensor.serialNumber, HEX) + "' required>";
+    html += "<input type='text' id='serialNumber' name='serialNumber' value='" + formatSN(sensor.serialNumber) + "' required>";
 
     // Device key
     html += "<label for='deviceKey'>Device Key:</label>";
-    html += "<input type='text' id='deviceKey' name='deviceKey' value='" + String(sensor.deviceKey, HEX) + "' required>";
+    html += "<input type='text' id='deviceKey' name='deviceKey' value='" + formatKey(sensor.deviceKey) + "' required>";
 
     // New code with a single field
     html += "<label for='customUrl'>Custom URL with Placeholders (Optional):</label>";
@@ -1166,6 +1390,7 @@ String HTMLGenerator::generateSensorEditPage(const SensorData &sensor, int index
 String HTMLGenerator::generateLogsPage(const LogEntry *logs, size_t logCount, LogLevel currentLevel)
 {
     String html;
+    html.reserve(8192);
 
     // Adding header
     addHtmlHeader(html, "Logs");
@@ -1367,6 +1592,7 @@ String HTMLGenerator::generateAPIJson(const std::vector<SensorData> &sensors)
 String HTMLGenerator::generateAPIPage(const std::vector<SensorData> &sensors)
 {
     String html;
+    html.reserve(4096);
 
     // Adding header
     addHtmlHeader(html, "API");
@@ -1400,7 +1626,7 @@ String HTMLGenerator::generateAPIPage(const std::vector<SensorData> &sensors)
         html += "      \"name\": \"" + sensor.name + "\",\n";
         html += "      \"type\": " + String(static_cast<uint8_t>(sensor.deviceType)) + ",\n";
         html += "      \"typeName\": \"" + String(sensor.getTypeInfo().name) + "\",\n";
-        html += "      \"serialNumber\": \"" + String(sensor.serialNumber, HEX) + "\",\n";
+        html += "      \"serialNumber\": \"" + formatSN(sensor.serialNumber) + "\",\n";
         html += "      \"lastSeen\": " + (sensor.lastSeen > 0 ? String((millis() - sensor.lastSeen) / 1000) : "-1") + ",\n";
 
         if (sensor.hasTemperature())

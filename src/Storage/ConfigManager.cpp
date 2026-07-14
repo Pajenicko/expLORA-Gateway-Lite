@@ -25,6 +25,9 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 
+// External NTP sync function from main.cpp
+extern bool syncNTPTime(const String &timezone, unsigned long timeoutMs = 10000);
+
 // Constructor
 ConfigManager::ConfigManager(Logger &log, const char *file)
     : logger(log), preferencesInitialized(false), configFile(file)
@@ -317,6 +320,10 @@ bool ConfigManager::setMqttConfig(const String &host, int port, const String &us
     if (!isValidMqttTopic(rootPrefix) || !isValidMqttTopic(haPrefix))
     {
         logger.error("Invalid MQTT topic format");
+        logger.verbose("Root topic: " + rootPrefix);
+        logger.verbose("root check: " + String(isValidMqttTopic(rootPrefix)));
+        logger.verbose("HA topic: " + haPrefix);
+        logger.verbose("HA check: " + String(isValidMqttTopic(haPrefix)));
         return false;
     }
 
@@ -338,10 +345,11 @@ bool ConfigManager::setTimezone(const String &newTimezone, bool saveConfig)
 {
     timezone = newTimezone;
 
-    // Configure the time with new timezone
-    configTime(0, 0, NTP_SERVER);      // First set to UTC
-    setenv("TZ", timezone.c_str(), 1); // Set the TZ environment variable
-    tzset();                           // Apply the time zone
+    // Configure the time with new timezone using verified sync
+    if (!syncNTPTime(timezone))
+    {
+        logger.warning("NTP sync failed during timezone change");
+    }
 
     if (saveConfig)
     {
@@ -361,11 +369,11 @@ bool ConfigManager::isValidMqttTopic(const String &topic)
     // Check for invalid characters
     if (topic.indexOf('#') != -1 || topic.indexOf('+') != -1)
         return false;
-    
-    // Check for null character
-    if (topic.indexOf('\0') != -1)
+
+    // Check for leading or trailing slashes
+    if (topic[0] == '/' || topic[topic.length()-1] == '/') 
         return false;
-    
+
     return true;
 }
 

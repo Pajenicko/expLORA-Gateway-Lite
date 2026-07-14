@@ -49,6 +49,9 @@ private:
     String clientId;                    // MQTT Client ID
     unsigned long lastReconnectAttempt; // Time of last connection attempt
     unsigned long lastDiscoveryUpdate;  // Time of last discovery update
+    
+    // MQTT flag representing if client is ready
+    bool mqttClientReady = false;
 
     // Connect to MQTT broker
     bool connect();

@@ -33,6 +33,7 @@
  * Handles adding, modifying, and deleting sensors, searching for them,
  * and managing their data. Stores sensor configuration in the file system.
  */
+
 class SensorManager
 {
 private:
@@ -92,6 +93,9 @@ public:
     // Get list of all active sensors (configured)
     std::vector<SensorData> getActiveSensors() const;
 
+    // Get list of active sensors (configured) with real index
+    std::vector<ActiveSensorEntry> getActiveSensorEntries() const;
+
     // Save sensor configuration to file
     bool saveSensors(bool lockMutex);
 
@@ -103,4 +107,17 @@ public:
 
     // Convert relative pressure to absolute pressure
     double relativeToAbsolutePressure(double p0_hpa, int altitude_m, double temp_c);
+
+    // -----------------------------------------------------------------------
+    // Per-sensor health tracking. Calls delegate to SensorHealth (header-only,
+    // pure C++) which lives on each sensor's `health` member. `nowMillis` is
+    // the value of millis() at the event; tests use deterministic values.
+    //
+    // Use recordSensorSuccess/recordSensorRejection from packet processing,
+    // and tickSensorHealth from the main loop so the 24h ring buffer rotates
+    // even during quiet periods.
+    // -----------------------------------------------------------------------
+    void recordSensorSuccess(int index, unsigned long nowMillis);
+    void recordSensorRejection(int index, unsigned long nowMillis, const char *reason);
+    void tickSensorHealth(unsigned long nowMillis);
 };

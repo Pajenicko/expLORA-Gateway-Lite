@@ -29,7 +29,6 @@
 #include "../Data/Logging.h"
 #include "../Storage/ConfigManager.h"
 #include "../Protocol/MQTTManager.h"
-#include "OTAServer.h"
 
 /**
  * Class for web portal management
@@ -55,10 +54,11 @@ private:
     DNSServer dnsServer;          // DNS server for captive portal
     SensorManager &sensorManager; // Reference to sensor manager
     Logger &logger;               // Reference to logger
-    OTAServer *otaServer;         // OTA Server
 
     bool isAPMode; // AP mode (true) or client mode (false)
     String apName; // AP name in AP mode
+    bool routesRegistered = false; // Ensure routes are registered only once
+    bool serverStarted = false;    // Track server begin/end state
 
     // Device configuration - reference to external configuration
     String &wifiSSID;
@@ -66,13 +66,30 @@ private:
     bool &configMode;
     String &timezone;
 
-    // AP mode initialization
+
+    // Firmware upload state
+    bool otaUploadHasError = false;
+    String otaUploadErrorMsg = "";
+    size_t otaUploadExpected = 0;
+    size_t otaUploadWritten  = 0;
+
+    // Full AP (re)initialization with hard WiFi reset — only safe at boot.
     void setupAP();
+
+    // Bring the AP up additively without disturbing an active STA. Idempotent.
+    void ensureAPUp();
+
+    // Deferred restart: handlers set these and handleClient() executes the reboot
+    // once the response has had time to flush. Avoids ESP.restart() inside async handlers.
+    bool restartRequested = false;
+    unsigned long restartAt = 0;
 
     ConfigManager &configManager; // Reference to configuration
 
     // Setup routes for web server
     void setupRoutes();
+    // Guard handlers: if AP mode, redirect to /config and return true
+    bool guardAPOnly(AsyncWebServerRequest *request);
 
     // Create content for individual pages
     String createHomePage();
@@ -99,8 +116,18 @@ private:
     void handleAPI(AsyncWebServerRequest *request);
     void handleMqtt(AsyncWebServerRequest *request);
     void handleMqttPost(AsyncWebServerRequest *request);
+    void handleFirmwareVersion(AsyncWebServerRequest *request);
+    void handleFirmwareCheck(AsyncWebServerRequest *request);
+    void handleFirmwareUpdate(AsyncWebServerRequest *request);
     void handleReboot(AsyncWebServerRequest *request);
     void handleNotFound(AsyncWebServerRequest *request);
+    void handleDiagHeap(AsyncWebServerRequest *request);
+
+    // Firmware update handling
+    void handleFirmwarePage(AsyncWebServerRequest *request);
+    void handleFirmwareUploadComplete(AsyncWebServerRequest *request);
+    void handleFirmwareUploadChunk(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
+
 
     // Receive WebSocket messages
     void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,

@@ -20,6 +20,7 @@
  */
 
 #include "SensorManager.h"
+#include "SensorCalibration.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
@@ -76,7 +77,7 @@ int SensorManager::addSensor(SensorType deviceType, uint32_t serialNumber, uint3
         sensors[existingIndex].name = name;
         sensors[existingIndex].configured = true;
 
-        logger.info("Updated existing sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+        logger.info("Updated existing sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
         saveSensors(false);
         return existingIndex;
     }
@@ -126,7 +127,7 @@ int SensorManager::addSensor(SensorType deviceType, uint32_t serialNumber, uint3
     sensors[newIndex].rssi = 0;
     sensors[newIndex].configured = true;
 
-    logger.info("Added new sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+    logger.info("Added new sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
     saveSensors(false);
     return newIndex;
 }
@@ -194,84 +195,131 @@ bool SensorManager::updateSensorData(int index, float temperature, float humidit
     float originalRainAmount = rainAmount;
     float originalRainRate = rainRate;
 
-    // Apply corrections to input values before updating
-    temperature += sensors[index].temperatureCorrection;
-    humidity += sensors[index].humidityCorrection;
-    pressure += sensors[index].pressureCorrection;
-    ppm += sensors[index].ppmCorrection;
-    lux += sensors[index].luxCorrection;
-    windSpeed *= sensors[index].windSpeedCorrection;
+    // Apply corrections to input values before updating.
+    // Delegated to SensorCalibration (covered by native unit tests).
+    // Note: applyWindDirectionCorrection fixes a latent C++ integer-promotion
+    // bug in the previous inline (uint16_t + int) % 360 path that wrapped
+    // negative offsets to ~65k° instead of e.g. 350°.
+    temperature = SensorCalibration::applyOffset(temperature, sensors[index].temperatureCorrection);
+    humidity    = SensorCalibration::applyOffset(humidity,    sensors[index].humidityCorrection);
+    pressure    = SensorCalibration::applyOffset(pressure,    sensors[index].pressureCorrection);
+    ppm         = SensorCalibration::applyOffset(ppm,         sensors[index].ppmCorrection);
+    lux         = SensorCalibration::applyOffset(lux,         sensors[index].luxCorrection);
+    windSpeed   = SensorCalibration::applyMultiplier(windSpeed, sensors[index].windSpeedCorrection);
+    windDirection = SensorCalibration::applyWindDirectionCorrection(
+        windDirection, sensors[index].windDirectionCorrection);
+    rainAmount  = SensorCalibration::applyMultiplier(rainAmount, sensors[index].rainAmountCorrection);
+    rainRate    = SensorCalibration::applyMultiplier(rainRate,   sensors[index].rainRateCorrection);
 
-    // For wind direction, ensure value stays in 0-359 range
-    windDirection = (windDirection + sensors[index].windDirectionCorrection) % 360;
-
-    rainAmount *= sensors[index].rainAmountCorrection;
-    rainRate *= sensors[index].rainRateCorrection;
-
-    // Log if corrections were applied
-    bool correctionsApplied = false;
-    String correctionLog = "Corrections applied to " + sensors[index].name + ": ";
-
-    if (sensors[index].hasTemperature() && sensors[index].temperatureCorrection != 0)
+    // Log if corrections were applied (only build string if debug enabled)
+    if (logger.getLogLevel() >= LogLevel::DEBUG)
     {
-        correctionLog += "Temp " + String(originalTemp, 2) + "→" + String(temperature, 2) + "°C, ";
-        correctionsApplied = true;
-    }
+        bool correctionsApplied = false;
+        String correctionLog;
+        correctionLog.reserve(128);
+        correctionLog += "Corrections applied to ";
+        correctionLog += sensors[index].name;
+        correctionLog += ": ";
 
-    if (sensors[index].hasHumidity() && sensors[index].humidityCorrection != 0)
-    {
-        correctionLog += "Hum " + String(originalHum, 2) + "→" + String(humidity, 2) + "%, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasTemperature() && sensors[index].temperatureCorrection != 0)
+        {
+            correctionLog += "Temp ";
+            correctionLog += String(originalTemp, 2);
+            correctionLog += "→";
+            correctionLog += String(temperature, 2);
+            correctionLog += "°C, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasPressure() && sensors[index].pressureCorrection != 0)
-    {
-        correctionLog += "Press " + String(originalPress, 2) + "→" + String(pressure, 2) + "hPa, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasHumidity() && sensors[index].humidityCorrection != 0)
+        {
+            correctionLog += "Hum ";
+            correctionLog += String(originalHum, 2);
+            correctionLog += "→";
+            correctionLog += String(humidity, 2);
+            correctionLog += "%, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasPPM() && sensors[index].ppmCorrection != 0)
-    {
-        correctionLog += "CO2 " + String(originalPPM, 0) + "→" + String(ppm, 0) + "ppm, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasPressure() && sensors[index].pressureCorrection != 0)
+        {
+            correctionLog += "Press ";
+            correctionLog += String(originalPress, 2);
+            correctionLog += "→";
+            correctionLog += String(pressure, 2);
+            correctionLog += "hPa, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasLux() && sensors[index].luxCorrection != 0)
-    {
-        correctionLog += "Lux " + String(originalLux, 1) + "→" + String(lux, 1) + "lx, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasPPM() && sensors[index].ppmCorrection != 0)
+        {
+            correctionLog += "CO2 ";
+            correctionLog += String(originalPPM, 0);
+            correctionLog += "→";
+            correctionLog += String(ppm, 0);
+            correctionLog += "ppm, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasWindSpeed() && sensors[index].windSpeedCorrection != 1.0f)
-    {
-        correctionLog += "Wind " + String(originalWindSpeed, 1) + "→" + String(windSpeed, 1) + "m/s, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasLux() && sensors[index].luxCorrection != 0)
+        {
+            correctionLog += "Lux ";
+            correctionLog += String(originalLux, 1);
+            correctionLog += "→";
+            correctionLog += String(lux, 1);
+            correctionLog += "lx, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasWindDirection() && sensors[index].windDirectionCorrection != 0)
-    {
-        correctionLog += "Dir " + String(originalWindDir) + "→" + String(windDirection) + "°, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasWindSpeed() && sensors[index].windSpeedCorrection != 1.0f)
+        {
+            correctionLog += "Wind ";
+            correctionLog += String(originalWindSpeed, 1);
+            correctionLog += "→";
+            correctionLog += String(windSpeed, 1);
+            correctionLog += "m/s, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasRainAmount() && sensors[index].rainAmountCorrection != 1.0f)
-    {
-        correctionLog += "Rain " + String(originalRainAmount, 1) + "→" + String(rainAmount, 1) + "mm, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasWindDirection() && sensors[index].windDirectionCorrection != 0)
+        {
+            correctionLog += "Dir ";
+            correctionLog += String(originalWindDir);
+            correctionLog += "→";
+            correctionLog += String(windDirection);
+            correctionLog += "°, ";
+            correctionsApplied = true;
+        }
 
-    if (sensors[index].hasRainRate() && sensors[index].rainRateCorrection != 1.0f)
-    {
-        correctionLog += "Rate " + String(originalRainRate, 1) + "→" + String(rainRate, 1) + "mm/h, ";
-        correctionsApplied = true;
-    }
+        if (sensors[index].hasRainAmount() && sensors[index].rainAmountCorrection != 1.0f)
+        {
+            correctionLog += "Rain ";
+            correctionLog += String(originalRainAmount, 1);
+            correctionLog += "→";
+            correctionLog += String(rainAmount, 1);
+            correctionLog += "mm, ";
+            correctionsApplied = true;
+        }
 
-    // Log corrections if any were applied
-    if (correctionsApplied)
-    {
-        // Remove trailing comma and space
-        correctionLog = correctionLog.substring(0, correctionLog.length() - 2);
-        logger.debug(correctionLog);
+        if (sensors[index].hasRainRate() && sensors[index].rainRateCorrection != 1.0f)
+        {
+            correctionLog += "Rate ";
+            correctionLog += String(originalRainRate, 1);
+            correctionLog += "→";
+            correctionLog += String(rainRate, 1);
+            correctionLog += "mm/h, ";
+            correctionsApplied = true;
+        }
+
+        if (correctionsApplied)
+        {
+            // Remove trailing ", " if present
+            if (correctionLog.endsWith(", "))
+            {
+                correctionLog.remove(correctionLog.length() - 2);
+            }
+            logger.debug(correctionLog);
+        }
     }
 
     // Adjust pressure for altitude
@@ -403,8 +451,11 @@ bool SensorManager::forwardSensorData(int index)
     }
 
     // Create a WiFi client for HTTP request
-    WiFiClient client;
     HTTPClient http;
+    http.setTimeout(3000); // keep operations short to avoid WDT/starvation
+    WiFiClient plainClient;
+    WiFiClientSecure *secureClientPtr = nullptr; // allocated only for HTTPS and deleted after use
+    http.setReuse(false);
 
     // Format the custom URL by replacing placeholders
     String url = sensors[index].customUrl;
@@ -462,21 +513,21 @@ bool SensorManager::forwardSensorData(int index)
     // Replace other common placeholders
     url.replace("*BAT*", String(sensors[index].batteryVoltage, 2));
     url.replace("*RSSI*", String(sensors[index].rssi));
-    url.replace("*SN*", String(sensors[index].serialNumber, HEX));
+    url.replace("*SN*", formatSN(sensors[index].serialNumber));
     url.replace("*TYPE*", String(static_cast<uint8_t>(sensors[index].deviceType)));
 
     logger.debug("Forwarding data for sensor " + sensors[index].name + " to URL: " + url);
 
-    // For HTTPS, use a secure client but with insecure flag
+    // For HTTPS, use a secure client, but ensure we delete it after the request
     if (isHttps)
     {
-        WiFiClientSecure *secureClient = new WiFiClientSecure();
-        secureClient->setInsecure(); // Skip certificate validation
-        http.begin(*secureClient, url);
+        secureClientPtr = new WiFiClientSecure();
+        secureClientPtr->setInsecure(); // Skip certificate validation (no CA bundle)
+        http.begin(*secureClientPtr, url);
     }
     else
     {
-        http.begin(client, url);
+        http.begin(plainClient, url);
     }
 
     // Send the request
@@ -498,6 +549,11 @@ bool SensorManager::forwardSensorData(int index)
     }
 
     http.end();
+    if (secureClientPtr)
+    {
+        delete secureClientPtr;
+        secureClientPtr = nullptr;
+    }
 
     return (httpCode == HTTP_CODE_OK);
 }
@@ -524,7 +580,7 @@ bool SensorManager::updateSensorConfig(int index, const String &name, SensorType
     if (existingIndex >= 0 && existingIndex != index)
     {
         logger.warning("Cannot update sensor config: Serial number " +
-                       String(serialNumber, HEX) + " already used by sensor " +
+                       formatSN(serialNumber) + " already used by sensor " +
                        sensors[existingIndex].name);
         return false;
     }
@@ -548,7 +604,7 @@ bool SensorManager::updateSensorConfig(int index, const String &name, SensorType
     sensors[index].rainAmountCorrection = rainAmountCorr;
     sensors[index].rainRateCorrection = rainRateCorr;
 
-    logger.info("Updated configuration for sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+    logger.info("Updated configuration for sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
     saveSensors(false);
     return true;
 }
@@ -570,7 +626,7 @@ bool SensorManager::deleteSensor(int index)
     // Mark as unconfigured instead of physically removing
     sensors[index].configured = false;
 
-    logger.info("Deleted sensor: " + name + " (SN: " + String(serialNumber, HEX) + ")");
+    logger.info("Deleted sensor: " + name + " (SN: " + formatSN(serialNumber) + ")");
     saveSensors(false);
     return true;
 }
@@ -610,6 +666,21 @@ std::vector<SensorData> SensorManager::getAllSensors() const
     for (size_t i = 0; i < sensorCount; i++)
     {
         result.push_back(sensors[i]);
+    }
+    return result;
+}
+
+std::vector<ActiveSensorEntry> SensorManager::getActiveSensorEntries() const
+{
+    std::lock_guard<std::mutex> lock(sensorMutex);
+
+    std::vector<ActiveSensorEntry> result;
+    for (size_t i = 0; i < sensorCount; ++i)
+    {
+        if (sensors[i].configured)
+        {
+            result.push_back({ i, sensors[i] });
+        }
     }
     return result;
 }
@@ -682,15 +753,27 @@ bool SensorManager::saveSensors(bool lockMutex)
         }
     }
     logger.info("Serializing sensors to JSON");
-    // Serialize JSON to file
-    if (serializeJson(doc, file) == 0)
+    
+    String jsonString;
+    size_t jsonSize = serializeJson(doc, jsonString);
+    if (jsonSize == 0)
     {
-        logger.info("Failed to write sensors to file");
+        logger.error("Failed to serialize sensors to JSON");
         file.close();
         return false;
     }
 
+    // Write JSON string to file
+    size_t bytesWritten = file.print(jsonString);
+    file.flush(); // Ensure data is written to flash
     file.close();
+
+    if (bytesWritten != jsonSize)
+    {
+        logger.error("Failed to write complete JSON to file");
+        return false;
+    }
+
     logger.info("Saved " + String(sensorArray.size()) + " sensors to " + String(sensorsFile));
     return true;
 }
@@ -722,11 +805,33 @@ bool SensorManager::loadSensors()
         return false;
     }
 
+    // Check file size
+    size_t fileSize = file.size();
+    if (fileSize == 0)
+    {
+        logger.warning("Sensors file is empty, starting with empty configuration");
+        file.close();
+        LittleFS.remove(sensorsFile); // Remove empty file
+        return true;
+    }
+
+    // Read content and check for whitespace-only files
+    String fileContent = file.readString();
+    file.close();
+
+    fileContent.trim();
+    if (fileContent.length() == 0)
+    {
+        logger.warning("Sensors file contains only whitespace, removing it");
+        LittleFS.remove(sensorsFile);
+        return true;
+    }
+
     // Create JSON document
     DynamicJsonDocument doc(4096); // Sufficiently large buffer
 
     // Deserialize JSON from file
-    DeserializationError error = deserializeJson(doc, file);
+    DeserializationError error = deserializeJson(doc, fileContent);
     file.close();
 
     if (error)
@@ -840,4 +945,42 @@ bool SensorManager::loadSensors()
 
     logger.info("Loaded " + String(sensorCount) + " sensors from configuration");
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Per-sensor health bookkeeping. Out-of-range indices and unconfigured slots
+// are silently ignored — caller doesn't need to know whether a sensor was
+// recently deleted between packet receipt and bookkeeping.
+// ---------------------------------------------------------------------------
+
+void SensorManager::recordSensorSuccess(int index, unsigned long nowMillis)
+{
+    std::lock_guard<std::mutex> lock(sensorMutex);
+    if (index < 0 || static_cast<size_t>(index) >= sensorCount || !sensors[index].configured)
+    {
+        return;
+    }
+    SensorHealth::recordSuccess(sensors[index].health, nowMillis);
+}
+
+void SensorManager::recordSensorRejection(int index, unsigned long nowMillis, const char *reason)
+{
+    std::lock_guard<std::mutex> lock(sensorMutex);
+    if (index < 0 || static_cast<size_t>(index) >= sensorCount || !sensors[index].configured)
+    {
+        return;
+    }
+    SensorHealth::recordRejection(sensors[index].health, nowMillis, reason);
+}
+
+void SensorManager::tickSensorHealth(unsigned long nowMillis)
+{
+    std::lock_guard<std::mutex> lock(sensorMutex);
+    for (size_t i = 0; i < sensorCount; i++)
+    {
+        if (sensors[i].configured)
+        {
+            SensorHealth::advanceBucketsIfNeeded(sensors[i].health, nowMillis);
+        }
+    }
 }
